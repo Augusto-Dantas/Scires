@@ -1,0 +1,13 @@
+[package]
+name = "scires-core"
+description = "SciRes domain model: languages, values, workspace and events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "scires-app"
+description = "SciRes application services: wires the domain crates together"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scires-core.workspace = true
+scires-kernel.workspace = true
+scires-debug.workspace = true
+scires-plugin.workspace = true
+scires-viz.workspace = true
+semver.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

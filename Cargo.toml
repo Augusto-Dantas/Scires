@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/scires-core",
+    "crates/scires-kernel",
+    "crates/scires-debug",
+    "crates/scires-plugin",
+    "crates/scires-viz",
+    "crates/scires-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Proprietary"
+repository = "https://github.com/<owner>/scires"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+toml = "0.8"
+semver = { version = "1", features = ["serde"] }
+scires-core = { path = "crates/scires-core" }
+scires-kernel = { path = "crates/scires-kernel" }
+scires-debug = { path = "crates/scires-debug" }
+scires-plugin = { path = "crates/scires-plugin" }
+scires-viz = { path = "crates/scires-viz" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
