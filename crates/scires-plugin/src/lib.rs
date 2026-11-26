@@ -27,7 +27,9 @@
 mod manifest;
 mod registry;
 
-pub use manifest::{ActivationEvent, CommandContribution, Contributions, PluginManifest};
+pub use manifest::{
+    ActivationEvent, CommandContribution, Contributions, PluginManifest, Runtime, ViewContribution,
+};
 pub use registry::{PluginRegistry, PluginState};
 
 use thiserror::Error;

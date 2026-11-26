@@ -11,6 +11,7 @@ scires-kernel.workspace = true
 scires-debug.workspace = true
 scires-plugin.workspace = true
 scires-viz.workspace = true
+scires-ui.workspace = true
 semver.workspace = true
 thiserror.workspace = true
 

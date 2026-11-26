@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/Augusto-Dantas/Scires/security/advisories/new
+    about: Please report security vulnerabilities privately via GitHub Security Advisories (see SECURITY.md).
+  - name: Support & Questions
+    url: https://github.com/Augusto-Dantas/Scires/blob/main/SUPPORT.md
+    about: Check documentation and support channels before opening an issue.
