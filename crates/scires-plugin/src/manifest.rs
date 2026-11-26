@@ -99,6 +99,11 @@ pub struct PluginManifest {
 
 impl PluginManifest {
     /// Parse and validate a TOML manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::Parse`] on TOML syntax/schema errors, or
+    /// [`PluginError::Invalid`] if semantic validation fails.
     pub fn from_toml(src: &str) -> Result<Self, PluginError> {
         let m: Self = toml::from_str(src).map_err(|e| PluginError::Parse(e.to_string()))?;
         m.validate()?;

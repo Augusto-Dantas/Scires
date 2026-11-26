@@ -69,6 +69,12 @@ impl KernelManager {
     }
 
     /// Execute code in the kernel for `language`, starting it if needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KernelError::Unsupported`] if no factory is registered for `language`,
+    /// [`KernelError::Startup`] if lazy startup fails, or [`KernelError::Execution`] if
+    /// the evaluated code raises an error.
     pub fn execute(
         &mut self,
         language: &Language,

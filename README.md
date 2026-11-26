@@ -36,4 +36,15 @@ Phase 1 — **architecture and business logic** (no UI yet). See
 cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --open
 ```
+
+## Documentation
+
+API documentation is generated with **rustdoc** across all workspace crates (including runnable doc-tests verified by `cargo test --workspace`). Build and open the docs locally with:
+
+```sh
+cargo doc --no-deps --workspace --open
+```
+
+Architecture notes, style conventions, and decision records live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/STYLE_GUIDE.md`](docs/STYLE_GUIDE.md), and [`docs/adr`](docs/adr).

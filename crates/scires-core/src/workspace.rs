@@ -48,6 +48,10 @@ impl Workspace {
     }
 
     /// Insert or update a variable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::InvalidName`] if `var.name` is not a valid identifier.
     pub fn set(&mut self, var: Variable) -> Result<(), WorkspaceError> {
         Self::validate_name(&var.name)?;
         self.vars
@@ -62,6 +66,10 @@ impl Workspace {
     }
 
     /// Remove a variable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceError::NotFound`] if no variable with `name` exists in `language`.
     pub fn remove(&mut self, language: &Language, name: &str) -> Result<Value, WorkspaceError> {
         let v = self
             .vars

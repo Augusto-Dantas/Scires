@@ -37,6 +37,10 @@ impl BreakpointStore {
     }
 
     /// Add a breakpoint. Adding at an existing location returns the existing id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugError::InvalidBreakpoint`] if `line` is `0` or if `condition` is empty/whitespace.
     pub fn add(
         &mut self,
         source: impl Into<PathBuf>,

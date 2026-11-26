@@ -1,8 +1,20 @@
-//! Debugger domain, modeled on Spyder's debugger and the Debug Adapter Protocol.
+//! Debugger domain, modeled on Spyder's debugger and the Debug Adapter Protocol (DAP).
 //!
 //! - [`BreakpointStore`] keeps breakpoints independent of any session (persisted per project).
-//! - [`DebugAdapter`] is the port each language implements (Debugger.jl, debugpy, lldb-dap...).
-//! - [`DebugSession`] enforces a valid state machine on top of an adapter.
+//! - [`DebugAdapter`] is the port each language implements (`Debugger.jl`, `debugpy`, `lldb-dap`, ...).
+//! - [`DebugSession`] enforces a valid [`DebugState`] machine on top of an adapter.
+//!
+//! # Examples
+//!
+//! ```
+//! use std::path::Path;
+//! use scires_debug::BreakpointStore;
+//!
+//! let mut store = BreakpointStore::new();
+//! assert!(store.toggle("main.jl", 10)?);
+//! assert_eq!(store.active_for(Path::new("main.jl")).len(), 1);
+//! # Ok::<(), scires_debug::DebugError>(())
+//! ```
 
 mod breakpoints;
 mod session;

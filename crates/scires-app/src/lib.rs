@@ -1,6 +1,26 @@
 //! Application layer: use cases invoked by the UI (command pattern).
 //!
-//! The UI never touches domain crates directly; it sends [`Command`]s to [`App`].
+//! The UI never touches domain crates directly; it sends [`Command`]s to [`App`] and
+//! receives [`Reply`] values while subscribing to domain events via [`App::events`].
+//!
+//! # Examples
+//!
+//! ```
+//! use std::sync::Arc;
+//! use scires_app::{App, Command};
+//! use scires_core::{Language, Value};
+//! use scires_kernel::mock::EchoKernelFactory;
+//!
+//! let mut app = App::default();
+//! app.register_kernel(Arc::new(EchoKernelFactory::new(Language::Julia)));
+//! app.dispatch(Command::Execute {
+//!     language: Language::Julia,
+//!     code: "x = 42".into(),
+//! })?;
+//!
+//! assert_eq!(app.workspace().get(&Language::Julia, "x"), Some(&Value::Int(42)));
+//! # Ok::<(), scires_app::AppError>(())
+//! ```
 
 use scires_core::{EventBus, InMemoryEventBus, Language, Workspace};
 use scires_debug::BreakpointStore;
@@ -136,6 +156,11 @@ impl App {
     }
 
     /// Dispatch a command.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`AppError`] from the underlying kernel, plugin registry,
+    /// breakpoint store, or workspace.
     pub fn dispatch(&mut self, cmd: Command) -> Result<Reply, AppError> {
         match cmd {
             Command::Execute { language, code } => self.execute(language, code),

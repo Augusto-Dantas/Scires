@@ -1,8 +1,28 @@
 //! Plug-and-play plugin system (MATLAB toolboxes / VS Code extensions).
 //!
 //! A plugin is described by a [`PluginManifest`] (`scires-plugin.toml`). The
-//! [`PluginRegistry`] validates compatibility, resolves dependencies and tracks lifecycle.
-//! Runtime behaviour is provided through the [`Plugin`] trait.
+//! [`PluginRegistry`] validates compatibility, resolves dependencies in topological order,
+//! and tracks [`PluginState`] transitions. Runtime behaviour is provided through [`Plugin`]
+//! and [`PluginContext`].
+//!
+//! # Examples
+//!
+//! ```
+//! use semver::Version;
+//! use scires_plugin::{PluginManifest, PluginRegistry, PluginState};
+//!
+//! let manifest = PluginManifest::from_toml(r#"
+//!     id = "scires.python"
+//!     name = "Python support"
+//!     version = "0.1.0"
+//!     scires = "^0.1"
+//! "#)?;
+//!
+//! let mut registry = PluginRegistry::new(Version::new(0, 1, 0));
+//! registry.install(manifest)?;
+//! assert_eq!(registry.state("scires.python"), Some(&PluginState::Enabled));
+//! # Ok::<(), scires_plugin::PluginError>(())
+//! ```
 
 mod manifest;
 mod registry;

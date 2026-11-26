@@ -61,6 +61,11 @@ impl DebugSession {
     }
 
     /// Launch a program, syncing all enabled breakpoints first.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugError::InvalidTransition`] if the session is not [`DebugState::Idle`],
+    /// or [`DebugError::Adapter`] if the underlying [`DebugAdapter`] fails.
     pub fn launch(&mut self, program: &Path, bps: &BreakpointStore) -> Result<(), DebugError> {
         if self.state != DebugState::Idle {
             return Err(DebugError::InvalidTransition {

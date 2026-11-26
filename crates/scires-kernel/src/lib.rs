@@ -1,7 +1,23 @@
 //! Kernel abstraction (port) and kernel manager.
 //!
 //! Concrete kernels (Jupyter/ZeroMQ adapters for Julia, Python, R, C/C++) live in
-//! plugins and implement [`Kernel`] + [`KernelFactory`].
+//! plugins and implement [`Kernel`] + [`KernelFactory`]. [`KernelManager`] owns
+//! registered factories and lazily starts kernels on first use.
+//!
+//! # Examples
+//!
+//! ```
+//! use std::sync::Arc;
+//! use scires_core::{InMemoryEventBus, Language};
+//! use scires_kernel::{mock::EchoKernelFactory, ExecuteRequest, KernelManager, Output};
+//!
+//! let mut mgr = KernelManager::new(Arc::new(InMemoryEventBus::new()));
+//! mgr.register(Arc::new(EchoKernelFactory::new(Language::Julia)));
+//!
+//! let res = mgr.execute(&Language::Julia, &ExecuteRequest::new("1 + 1"))?;
+//! assert_eq!(res.outputs, vec![Output::Stdout("1 + 1".into())]);
+//! # Ok::<(), scires_kernel::KernelError>(())
+//! ```
 
 mod manager;
 pub mod mock;

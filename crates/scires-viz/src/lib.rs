@@ -1,8 +1,23 @@
 //! Declarative plot model (grammar-of-graphics, inspired by Vega-Lite / Makie / ggplot2).
 //!
-//! Kernels emit a [`PlotSpec`] as MIME `application/vnd.scires.plot+json`; any
-//! [`Renderer`] plugin (GPU, SVG, web) can draw it. MATLAB-like helpers (`plot`,
-//! `scatter`, `bar`, `heatmap`) keep the common case one line.
+//! Kernels emit a [`PlotSpec`] as MIME [`PLOT_MIME`] (`application/vnd.scires.plot+json`); any
+//! [`Renderer`] plugin (GPU, SVG, web) can draw it. MATLAB-like helpers ([`PlotSpec::plot`],
+//! [`PlotSpec::scatter`], [`PlotSpec::bar`], [`PlotSpec::heatmap`]) keep the common case one line.
+//!
+//! # Examples
+//!
+//! ```
+//! use scires_viz::PlotSpec;
+//!
+//! let spec = PlotSpec::plot(vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 4.0])
+//!     .title("Quadratic")
+//!     .labels("x", "y")
+//!     .label("x^2");
+//!
+//! let json = spec.to_json()?;
+//! assert_eq!(PlotSpec::from_json(&json)?, spec);
+//! # Ok::<(), scires_viz::VizError>(())
+//! ```
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -172,6 +187,12 @@ impl PlotSpec {
     }
 
     /// Validate data consistency.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VizError::Empty`] if there are no layers, [`VizError::LengthMismatch`] if an
+    /// `x`/`y` series has mismatched lengths, or [`VizError::RaggedMatrix`] if a heatmap matrix
+    /// has rows of different lengths.
     pub fn validate(&self) -> Result<(), VizError> {
         if self.layers.is_empty() {
             return Err(VizError::Empty);

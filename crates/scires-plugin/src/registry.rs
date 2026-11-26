@@ -37,7 +37,13 @@ impl PluginRegistry {
         }
     }
 
-    /// Install a plugin (initially `Enabled`). Checks host compatibility.
+    /// Install a plugin (initially [`PluginState::Enabled`]). Checks host compatibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginError::Invalid`] if the manifest is invalid,
+    /// [`PluginError::AlreadyInstalled`] if the id is already registered, or
+    /// [`PluginError::IncompatibleHost`] if the host version does not match.
     pub fn install(&mut self, manifest: PluginManifest) -> Result<(), PluginError> {
         manifest.validate()?;
         if self.plugins.contains_key(&manifest.id) {
