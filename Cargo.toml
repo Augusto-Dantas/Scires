@@ -6,6 +6,7 @@ members = [
     "crates/scires-debug",
     "crates/scires-plugin",
     "crates/scires-viz",
+    "crates/scires-ui",
     "crates/scires-app",
 ]
 
@@ -13,8 +14,8 @@ members = [
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
-license = "Proprietary"
-repository = "https://github.com/<owner>/scires"
+license = "MIT"
+repository = "https://github.com/Augusto-Dantas/scires"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -27,6 +28,7 @@ scires-kernel = { path = "crates/scires-kernel" }
 scires-debug = { path = "crates/scires-debug" }
 scires-plugin = { path = "crates/scires-plugin" }
 scires-viz = { path = "crates/scires-viz" }
+scires-ui = { path = "crates/scires-ui" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -55,6 +55,32 @@ pub struct CommandContribution {
     pub title: String,
 }
 
+/// How a plugin's code is built and executed (see ADR-0006).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Runtime {
+    /// Manifest-only: contributes commands, views, snippets or themes, no code.
+    Declarative,
+    /// Rust crate compiled into the host (first-party, trusted).
+    #[default]
+    Native,
+    /// `wasm32-wasip2` component run in a wasmtime sandbox (third-party default).
+    Wasm,
+    /// Separate executable speaking JSON-RPC over stdio (any language).
+    Process,
+}
+
+/// A dockable view contributed to the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewContribution {
+    /// View id, conventionally prefixed by the plugin id.
+    pub id: String,
+    /// Tab title.
+    pub title: String,
+    /// Preferred dock area: `left`, `center`, `right` or `bottom`.
+    pub area: String,
+}
+
 /// What a plugin adds to the IDE.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -69,6 +95,8 @@ pub struct Contributions {
     pub visualizers: Vec<String>,
     /// File extensions the plugin can import as data (e.g. "mat", "h5", "csv").
     pub importers: Vec<String>,
+    /// Dockable views (panels).
+    pub views: Vec<ViewContribution>,
 }
 
 /// Contents of `scires-plugin.toml`.
@@ -86,6 +114,13 @@ pub struct PluginManifest {
     /// Description.
     #[serde(default)]
     pub description: String,
+    /// How the plugin is built and run. Defaults to [`Runtime::Native`].
+    #[serde(default)]
+    pub runtime: Runtime,
+    /// Entry point relative to the plugin directory (`.wasm` file or executable).
+    /// Required for `wasm` and `process`, forbidden for `declarative`.
+    #[serde(default)]
+    pub entry: Option<String>,
     /// Activation events. Empty means activate on startup.
     #[serde(default)]
     pub activation: Vec<ActivationEvent>,
@@ -147,6 +182,35 @@ impl PluginManifest {
                 });
             }
         }
+        match (self.runtime, &self.entry) {
+            (Runtime::Wasm | Runtime::Process, None) => {
+                return Err(PluginError::Invalid {
+                    field: "entry",
+                    reason: "required for `wasm` and `process` runtimes".into(),
+                });
+            }
+            (Runtime::Declarative, Some(_)) => {
+                return Err(PluginError::Invalid {
+                    field: "entry",
+                    reason: "declarative plugins have no code entry point".into(),
+                });
+            }
+            (Runtime::Wasm, Some(e)) if !e.ends_with(".wasm") => {
+                return Err(PluginError::Invalid {
+                    field: "entry",
+                    reason: "wasm entry must be a `.wasm` file".into(),
+                });
+            }
+            _ => {}
+        }
+        for v in &self.contributes.views {
+            if !matches!(v.area.as_str(), "left" | "center" | "right" | "bottom") {
+                return Err(PluginError::Invalid {
+                    field: "contributes.views",
+                    reason: format!("view `{}` has unknown area `{}`", v.id, v.area),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -200,5 +264,56 @@ mod tests {
         assert!(PluginManifest::from_toml(&format!("{PY}\nfoo = 1")).is_err());
         let src = PY.replace("onLanguage:python", "onWhatever");
         assert!(PluginManifest::from_toml(&src).is_err());
+    }
+
+    fn with_header(extra: &str) -> String {
+        PY.replacen("activation", &format!("{extra}\n        activation"), 1)
+    }
+
+    #[test]
+    fn runtime_defaults_to_native() {
+        let m = PluginManifest::from_toml(PY).unwrap();
+        assert_eq!(m.runtime, Runtime::Native);
+    }
+
+    #[test]
+    fn wasm_and_process_require_entry() {
+        for rt in ["wasm", "process"] {
+            let src = with_header(&format!("runtime = \"{rt}\""));
+            assert!(matches!(
+                PluginManifest::from_toml(&src),
+                Err(PluginError::Invalid { field: "entry", .. })
+            ));
+        }
+        let ok = with_header("runtime = \"wasm\"\nentry = \"plugin.wasm\"");
+        assert!(PluginManifest::from_toml(&ok).is_ok());
+        let bad = with_header("runtime = \"wasm\"\nentry = \"plugin.exe\"");
+        assert!(PluginManifest::from_toml(&bad).is_err());
+    }
+
+    #[test]
+    fn declarative_forbids_entry() {
+        let src = with_header("runtime = \"declarative\"\nentry = \"x\"");
+        assert!(PluginManifest::from_toml(&src).is_err());
+    }
+
+    #[test]
+    fn validates_view_area() {
+        let ok = format!(
+            "{PY}\n[[contributes.views]]\nid = \"py.env\"\ntitle = \"Env\"\narea = \"left\""
+        )
+        .replace("[dependencies]\n        \"scires.arrow\" = \"^0.1\"", "");
+        assert_eq!(
+            PluginManifest::from_toml(&ok).unwrap().contributes.views.len(),
+            1
+        );
+        let bad = ok.replace("\"left\"", "\"top\"");
+        assert!(matches!(
+            PluginManifest::from_toml(&bad),
+            Err(PluginError::Invalid {
+                field: "contributes.views",
+                ..
+            })
+        ));
     }
 }

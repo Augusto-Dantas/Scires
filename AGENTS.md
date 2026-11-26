@@ -15,6 +15,7 @@ Instructions for AI coding agents working in the **SciRes** repository.
 | `crates/scires-debug` | `DebugSession` state machine, `BreakpointStore`, `DebugAdapter` port |
 | `crates/scires-plugin` | `PluginManifest` (`scires-plugin.toml`), `PluginRegistry`, dependency resolution |
 | `crates/scires-viz` | Declarative `PlotSpec` and `Renderer` port |
+| `crates/scires-ui` | Toolkit-agnostic UI model: dock `Layout`, `Panel`, `Theme` tokens |
 | `crates/scires-app` | Application facade (`App`, `Command`, `Reply`) wiring domain crates together |
 
 ## Key Rules & Boundaries

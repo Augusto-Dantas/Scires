@@ -1,0 +1,53 @@
+name: Feature Request
+description: Suggest an enhancement or new capability for SciRes
+title: "[Feat]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement to SciRes! Note that significant architectural changes may require an ADR in `docs/adr/`.
+  - type: dropdown
+    id: crate
+    attributes:
+      label: Target Area / Crate
+      description: Which part of SciRes does this feature relate to?
+      options:
+        - scires-core
+        - scires-kernel
+        - scires-debug
+        - scires-plugin
+        - scires-viz
+        - scires-app
+        - Architecture / Docs / Tooling
+        - New Crate / Adapter
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Is your feature request related to a problem? Please describe what is missing or difficult today.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the API, trait, or behavior you would like to see.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative designs or workarounds you have considered.
+    validations:
+      required: false
+  - type: checkboxes
+    id: architecture
+    attributes:
+      label: Architecture Considerations
+      options:
+        - label: Keeps domain crates pure (no I/O, UI, or runtime-specific code in domain crates)
+        - label: Likely requires an Architecture Decision Record (ADR) in `docs/adr/`

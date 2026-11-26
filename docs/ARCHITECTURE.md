@@ -68,6 +68,19 @@ commands = [{ id = "python.selectInterpreter", title = "Select Python interprete
 Lifecycle: `Installed → Enabled → Active → (Disabled | Failed)`. Activation is lazy
 (VS Code-style activation events) to keep start-up fast.
 
+Plugins declare a `runtime` — `declarative`, `native`, `wasm` (sandboxed, default for
+third parties) or `process` — and may contribute dockable `views`. The full authoring
+and build guide is [PLUGINS.md](PLUGINS.md) (ADR-0006).
+
+## 5a. UI
+
+`scires-ui` is a pure, toolkit-agnostic model of the shell: a dock `Layout`
+(`left | center | right | bottom`) of `Panel`s and `Theme` design tokens. The default
+`Layout::scientific()` mirrors Spyder/RStudio: Files · Editor · Variables/Plots ·
+Console/Debugger. The front-end is Tauri 2 (ADR-0007). The UI/UX prototype lives in
+Figma: <https://www.figma.com/design/mX6AQKKVN9mkPeRU6v44k1> (Main Window, Plugin
+Manager), with colour variables matching `Theme::dark()`.
+
 ## 6. Debugger
 
 Modeled on Spyder/VS Code: the IDE is a DAP client; each language provides a DAP adapter.

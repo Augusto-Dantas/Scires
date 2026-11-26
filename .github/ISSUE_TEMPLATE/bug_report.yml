@@ -1,0 +1,68 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in SciRes
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the sections below so we can reproduce and fix the issue.
+  - type: dropdown
+    id: crate
+    attributes:
+      label: Affected Crate
+      description: Which workspace crate(s) does this issue affect?
+      options:
+        - scires-core
+        - scires-kernel
+        - scires-debug
+        - scires-plugin
+        - scires-viz
+        - scires-app
+        - Documentation / Build / CI
+        - Other / Unsure
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the Bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal code, commands, or steps to reproduce the behavior.
+      placeholder: |
+        1. Run `...`
+        2. Call `...`
+        3. Observe error `...`
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Please share your OS and toolchain details.
+      placeholder: |
+        - OS: (e.g., Windows 11, Ubuntu 24.04, macOS 15)
+        - Rust version (`rustc --version`):
+        - Commit / Version:
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Logs, stack traces, or any other context about the problem.
+    validations:
+      required: false
