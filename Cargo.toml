@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/scires-core",
     "crates/scires-kernel",
+    "crates/scires-julia-kernel",
     "crates/scires-debug",
     "crates/scires-plugin",
     "crates/scires-viz",

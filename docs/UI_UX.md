@@ -1,7 +1,9 @@
 # SciRes UI/UX Design Specification
 
 **Status:** Proposed. This is a product and interaction specification, not a UI
-implementation, wireframe, or toolkit decision.
+implementation or wireframe. egui is the selected recommendation for the first
+native-shell spike; the implementation choice, editor, and Slint reconsideration remain
+open.
 
 ## 1. Product direction and constraints
 
@@ -14,8 +16,9 @@ feel like one coherent workbench without implying one shared interpreter.
 
 - Julia is the primary scripting environment; Python and R support specialized work,
   while C/C++ tasks cover performance-critical and legacy algorithms.
-- The IDE and orchestration are Rust-native. egui, Slint, or another native toolkit
-  remain candidates; none is selected (ADR-0007).
+- The IDE and orchestration are Rust-native. egui is the recommended toolkit for an
+  initial workbench spike; it is not yet an implementation dependency or final selection
+  (ADR-0007).
 - Kernels are intended to run in separate processes with per-language namespaces.
   Cross-language values move only through explicit typed transfers.
 - The implemented `scires-interchange` v1 profile provides Arrow IPC scalars, tables,
@@ -203,11 +206,11 @@ inherit host accessibility and theme conventions rather than styling an isolated
 
 ## 8. Open decisions and validation
 
-Open decisions include the native toolkit and editor component; notebook/cell support;
-project/window model; Julia executable/environment precedence; whether opening an
-untrusted project requires an execution trust prompt; exact shortcut defaults; transfer
-preview and size policy; plot handling for large arrays; plugin-view schema; and the
-Julia debugger's relationship to the interactive kernel.
+Open decisions include final toolkit selection and the editor component; notebook/cell
+support; project/window model; Julia executable/environment precedence; whether opening
+an untrusted project requires an execution trust prompt; exact shortcut defaults;
+transfer preview and size policy; plot handling for large arrays; plugin-view schema; and
+the Julia debugger's relationship to the interactive kernel.
 
 Before implementing the shell, validate the primary flows with researchers who use
 Julia and MATLAB-like environments: open/select an environment, run a script and inspect
@@ -216,6 +219,25 @@ and debug a stopped program. Record task completion, confusing states, and acces
 issues. Validate that the design still works with a non-Julia kernel and with transfer
 or debugger capabilities unavailable. This spec does not claim that those integrations
 exist.
+
+## 9. Native toolkit recommendation
+
+ADR-0007 compares egui and Slint against this workbench. The current recommendation is
+**egui for the first native-shell spike**: it keeps custom scientific inspectors,
+plots, and changing kernel state in Rust, and its MIT license aligns with the repository's
+current MIT license. The toolkit-independent `scires-ui` layout and theme model should
+remain the source of truth.
+
+Slint offers a declarative component language that may suit conventional IDE panels and
+accessibility integrations, but adds a UI DSL/code-generation workflow. Its framework is
+available for open-source applications under GPLv3, while the repository is currently
+MIT-licensed; review the distribution and licensing implications before choosing it.
+Neither toolkit has yet been evaluated with SciRes's editor, large scientific tables,
+docking behavior, keyboard navigation, screen readers, or plugin views. The recommendation
+is therefore a direction for a bounded prototype, not a claim that those requirements are
+already met. See [ADR-0007](adr/0007-ui-shell.md) and its upstream
+[egui](https://github.com/emilk/egui) and
+[Slint licensing](https://github.com/slint-ui/slint/blob/master/LICENSE.md) references.
 
 ## References
 
