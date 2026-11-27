@@ -30,6 +30,7 @@ Phase 1 — **architecture and business logic** (no UI yet). See
 | `scires-debug`  | Debug session state machine, breakpoints, DAP-style adapter trait |
 | `scires-plugin` | Plugin manifest, validation, registry, dependency resolution |
 | `scires-viz`    | Declarative plot specification & renderer trait |
+| `scires-interchange` | Versioned Arrow IPC value profile for explicit kernel transfers |
 | `scires-app`    | Application services / command bus wiring everything together |
 
 ## Development
@@ -39,6 +40,15 @@ cargo fmt --all
 cargo clippy --all-targets -- -D warnings
 cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --open
+```
+
+For the versioned Arrow profile's Python interoperability fixture and exploratory format
+benchmark, install the pinned Python dependencies and run:
+
+```sh
+python -m pip install -r tests/requirements-data-exchange.txt
+python tests/arrow_profile_interop.py
+python tests/bench_data_exchange.py
 ```
 
 ## Documentation

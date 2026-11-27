@@ -44,6 +44,7 @@ flowchart TD
 |---------|-------|--------------|
 | Workspace | `scires-core` | `Workspace`, `Variable`, `Value`, `Language` |
 | Execution | `scires-kernel` | `Kernel`, `KernelFactory`, `KernelManager`, `ExecuteRequest` |
+| Interchange | `scires-interchange` | Versioned Arrow IPC scalar, table, tensor and CSC profile |
 | Debugging | `scires-debug` | `DebugSession`, `DebugState`, `Breakpoint`, `DebugAdapter` |
 | Extensibility | `scires-plugin` | `PluginManifest`, `Contributions`, `PluginRegistry` |
 | Visualization | `scires-viz` | `PlotSpec`, `Layer`, `Mark`, `Renderer` |
@@ -63,26 +64,56 @@ copy-based transport. The initial transferable set is:
   and shape metadata preserved.
 - UTF-8 strings and rectangular tables whose columns use supported Arrow primitive types.
   Complex values are represented as a real/imaginary pair.
-- Sparse values only when expressible as a typed coordinate (COO) table with explicit
-  indices, values and shape metadata. Do not silently densify sparse data.
+- Sparse matrices in compressed sparse column (CSC) form with Int64 offsets and indices,
+  numeric values, shape metadata and zero-based wire indices. Do not silently densify
+  sparse data. Language adapters convert between zero-based wire indices and each
+  runtime's native index convention.
+
+The implemented v1 profile is in `crates/scires-interchange`. It supports Arrow null,
+Boolean, fixed-width integer, Float32/64, UTF-8 and component-pair complex scalar values;
+Arrow tables with standard primitive, binary, temporal, decimal, list and struct types;
+dense tensors with Boolean, signed/unsigned 8/16/32/64-bit, Float32/64 and Complex64/128
+element types; and
+numeric CSC sparse matrices. Complex scalar and tensor values use an Arrow struct with
+`real` and `imaginary` components. Tensor payloads are contiguous, flattened with the first
+axis varying fastest, and retain shape, dtype, optional axis names and units in the versioned
+envelope. CSC columns use Int64 offsets and indices with zero-based wire indices.
+
+Arrow validity represents missing table/scalar values; a valid NaN remains NaN. Dense
+tensors reject null elements. The codec performs no dtype coercion, so unsupported and
+lossy conversions fail rather than silently changing values. Dictionary, map, union and
+extension table fields are not supported in v1. Runtime objects, functions, pointers,
+and device-memory values are not part of the transfer model.
 
 Custom/object values, ragged arrays, runtime objects and values without a defined mapping
 remain kernel-local. They may be transferred only after an explicit user conversion;
 otherwise the operation returns a clear unsupported-value error rather than silently
 coercing data or sending a preview. Sparse formats that cannot be represented by the
-coordinate form are likewise rejected. Detailed wire schemas, nullability rules, numeric
-type coverage, memory order and conversion UX remain open.
+CSC profile are likewise rejected. The codec has no lossy conversion path; any future
+lossy conversion must be explicit.
 
 Shared-memory Arrow buffers are deferred: any later adoption must follow benchmarks and
 define buffer ownership, lifetime, cross-process cleanup and failure recovery first.
-The experimental Python-only format comparison in `tests/bench_data_exchange.py` is
-informational; it does not demonstrate SciRes or Julia interoperability.
+`tests/arrow_profile_interop.py` verifies Arrow IPC exchange between the Rust profile and
+PyArrow. This verifies the format boundary only, not Julia/R/C++ kernel adapters. The
+separate Python-only comparison in `tests/bench_data_exchange.py` remains exploratory
+performance evidence, not proof of SciRes runtime interoperability.
 
-The versioned SciRes kernel API (ADR-0008) is the compatibility boundary.
+The versioned SciRes kernel API (ADR-0002, refined in ADR-0008) is the compatibility boundary.
 Jupyter-compatible messaging is used where it fits, with small JSON or Protobuf control
 messages. Arrow IPC is the initial typed data representation rather than an implicit
 shared namespace. Compiled C/C++ tasks run in isolated workers; the IDE must not load
 arbitrary native libraries into its process.
+
+The current profile serializes and decodes Arrow IPC streams in memory; process transport,
+kernel lifecycle, and language-specific adapters remain unimplemented.
+
+**Julia reference kernel (proposed):** ADR-0009 proposes a Rust-managed Julia process,
+capability negotiation behind the versioned SciRes API, Jupyter-compatible execution
+semantics where supported, and Arrow IPC as a separate typed data plane. It also defines
+the proposed boundary for converting zero-based CSC wire indices to Julia indexing.
+This is a planning proposal only: IJulia/Jupyter and Julia Arrow interoperability have
+not been verified, and no Julia kernel adapter exists yet.
 
 ## 5. Plugins
 
@@ -139,8 +170,8 @@ stateDiagram-v2
 ## 7. Roadmap
 
 1. ✅ Architecture & domain logic (this phase)
-2. Versioned SciRes kernel API, Jupyter-compatible transport where applicable, and Julia
-   kernel adapter
+2. Validate the proposed Julia reference-kernel boundary (ADR-0009), then implement the
+   versioned SciRes kernel API and Julia adapter
 3. Explicit typed Arrow IPC transfers with copy-based transport and conversion errors
 4. DAP client + Debugger.jl integration; isolated C/C++ task workers
 5. Rust-native UI shell (toolkit TBD) with editor, console, variable explorer and plots

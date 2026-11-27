@@ -25,8 +25,10 @@ shared interpreter namespace or heap.
 5. Initial transferable values include dense N-dimensional fixed-width numeric and
    Boolean arrays with shape/type metadata; UTF-8 strings; rectangular tables with
    supported Arrow primitive columns; and complex values represented by real/imaginary
-   pairs. Sparse values are transferable only in an explicit typed COO representation
-   carrying indices, values, and shape. Do not silently densify sparse data.
+   pairs. Sparse matrices use compressed sparse column (CSC) representation with Int64
+   offsets and indices and zero-based wire indices. Language adapters convert between
+   zero-based wire indices and each runtime's native index convention. Do not silently
+   densify sparse data.
 6. Values without a defined mapping—including custom/runtime objects and ragged arrays—
    remain kernel-local unless the user explicitly converts them. If conversion is not
    supplied, fail the transfer with a clear unsupported-value error; do not silently
@@ -41,6 +43,26 @@ capability compatibility. The existing Python-only JSON/NPY/Arrow benchmark is
 exploratory format evidence only; it does not verify SciRes adapters or Julia
 interoperability.
 
-Detailed wire schemas, complete numeric type coverage, nullability and memory-order
-semantics, sparse index conventions, conversion UX, control-message encoding, transport
-details, and the native UI toolkit remain open decisions.
+**V1 implementation:** `crates/scires-interchange` implements Arrow IPC scalar, table,
+dense tensor and sparse CSC values. Scalar support is null, Boolean, signed/unsigned
+8/16/32/64-bit integer, Float32/64, UTF-8 and component-pair complex values. Tables
+preserve Arrow validity bitmaps and support standard primitive, binary, temporal, decimal,
+list and struct fields; dictionary,
+map, union and extension fields are rejected. A valid NaN is distinct from a missing
+value. Dense tensors support Boolean, signed/unsigned 8/16/32/64-bit, Float32/64 and
+Complex64/128 values, with contiguous column-major ordering, shape/dtype and optional axis
+names/units. Tensor elements cannot be null. Complex values use explicit real/imaginary
+components. Sparse matrices use CSC with Int64 offsets/indices, zero-based indices on the wire, and
+numeric values. Language-boundary conversion to native index bases is not implemented
+until runtime adapters exist. The codec does not coerce dtypes or implement lossy
+conversion.
+
+Rust unit/doc tests validate round-trips and malformed/unsupported values. The companion
+`tests/arrow_profile_interop.py` test exercises Rust/PyArrow IPC in both directions. It
+does not test Julia, R or C/C++ interoperability.
+
+Remaining decisions include the native UI toolkit, kernel lifecycle and runtime adapters,
+process transport, control-message encoding, any lossy conversion API and conversion UX,
+and interop validation against Julia, R and C/C++ runtimes. ADR-0009 proposes a Julia-first
+reference-kernel boundary; it remains Proposed until the IJulia/Jupyter and Julia value
+interoperability assumptions are validated.
