@@ -1,79 +1,115 @@
-//! Minimal IJulia/Jupyter reference-kernel adapter.
+//! Direct pure-Rust Jupyter/ZeroMQ adapter for an out-of-process IJulia kernel.
 //!
-//! The adapter owns a small Python Jupyter bridge process. The bridge owns the
-//! IJulia kernel process and translates Jupyter execute/control messages into the
-//! SciRes `Kernel` port. It does not make Julia a shared-memory or in-process runtime.
+//! Per ADR-0010, this adapter spawns Julia directly with an ephemeral loopback
+//! Jupyter connection file (`127.0.0.1`, HMAC-SHA256) and communicates over
+//! pure-Rust ZeroMQ (`zeromq` + `tokio`) with no Python runtime dependency.
 //!
 //! # Examples
 //!
 //! ```
 //! use scires_julia_kernel::{JuliaKernel, JuliaKernelConfig};
 //! use scires_kernel::Kernel;
-//! use std::path::PathBuf;
 //!
-//! let kernel = JuliaKernel::new(JuliaKernelConfig {
-//!     julia: PathBuf::from("julia"),
-//!     project: PathBuf::from("project"),
-//!     python: PathBuf::from("python"),
-//!     bridge_script: PathBuf::from("julia_bridge.py"),
-//! });
-//! assert_eq!(kernel.handshake().version, 1);
+//! let kernel = JuliaKernel::new(JuliaKernelConfig::new("julia", "tests/julia"));
+//! let handshake = kernel.handshake();
+//! assert_eq!(handshake.version, 1);
+//! assert!(handshake.capabilities.interrupt);
 //! ```
+
+mod protocol;
+mod transport;
 
 use scires_core::{Language, Variable};
 use scires_kernel::{
-    ExecuteRequest, ExecuteResult, Kernel, KernelCapabilities, KernelError, KernelHandshake,
-    KernelInfo, KernelStatus, Output,
+    ExecuteRequest, ExecuteResult, Kernel, KernelCapabilities, KernelControl, KernelError,
+    KernelHandshake, KernelInfo, KernelStatus,
 };
-use serde::Deserialize;
-use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Arc;
+use std::time::Duration;
+use transport::JuliaSession;
 
-/// Configuration for the Julia reference kernel.
+const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
+const DEFAULT_EXECUTE_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_INTERRUPT_GRACE: Duration = Duration::from_secs(5);
+const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Configuration for the direct Rust Julia kernel adapter.
 #[derive(Debug, Clone)]
 pub struct JuliaKernelConfig {
-    /// Julia executable.
+    /// Path to the `julia` executable.
     pub julia: PathBuf,
-    /// Julia project environment.
+    /// Path to the Julia project environment (`--project=...`).
     pub project: PathBuf,
-    /// Python executable containing `jupyter_client` and `pyzmq`.
-    pub python: PathBuf,
-    /// Bridge script shipped by this adapter crate.
-    pub bridge_script: PathBuf,
+    /// Maximum time to wait for IJulia startup and `kernel_info_reply`.
+    pub startup_timeout: Duration,
+    /// Maximum time to wait for a single `execute_request` to complete.
+    pub execute_timeout: Duration,
+    /// Maximum time to wait for `interrupt_reply` before escalating to termination.
+    pub interrupt_grace: Duration,
+    /// Maximum time to wait for graceful shutdown before killing the child process.
+    pub shutdown_timeout: Duration,
 }
 
 impl JuliaKernelConfig {
-    /// Resolve the workspace test bridge and environment.
-    pub fn test_default(root: &Path) -> Option<Self> {
-        let julia = which("julia")?;
-        let python = std::env::var_os("SCIRES_JULIA_PYTHON")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                root.join("target")
-                    .join("julia-test-venv")
-                    .join("Scripts")
-                    .join("python.exe")
-            });
-        let python = if python.is_file() {
-            python
-        } else {
-            which("python")?
-        };
-        Some(Self {
-            julia,
-            project: root.join("tests").join("julia"),
-            python,
-            bridge_script: root
-                .join("crates")
-                .join("scires-julia-kernel")
-                .join("julia_bridge.py"),
-        })
+    /// Create a configuration with explicit `julia` and `project` paths and default timeouts.
+    pub fn new(julia: impl Into<PathBuf>, project: impl Into<PathBuf>) -> Self {
+        Self {
+            julia: julia.into(),
+            project: project.into(),
+            startup_timeout: DEFAULT_STARTUP_TIMEOUT,
+            execute_timeout: DEFAULT_EXECUTE_TIMEOUT,
+            interrupt_grace: DEFAULT_INTERRUPT_GRACE,
+            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
+        }
+    }
+
+    /// Discover a `julia` executable explicitly via `SCIRES_JULIA_EXE`, `PATH`,
+    /// or standard platform fallback paths (e.g. `/snap/bin/julia` on Linux).
+    pub fn discover(project: impl Into<PathBuf>) -> Option<Self> {
+        let julia = discover_julia()?;
+        Some(Self::new(julia, project))
     }
 }
 
-/// Factory for the Julia reference kernel.
+/// Discover the `julia` executable in deterministic order:
+/// 1. `SCIRES_JULIA_EXE` environment variable
+/// 2. `PATH`
+/// 3. `/snap/bin/julia` on Linux
+pub fn discover_julia() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var_os("SCIRES_JULIA_EXE") {
+        let path = PathBuf::from(explicit);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    if let Some(found) = which("julia") {
+        return Some(found);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let snap = Path::new("/snap/bin/julia");
+        if snap.is_file() {
+            return Some(snap.to_path_buf());
+        }
+    }
+    None
+}
+
+fn which(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths).find_map(|dir| {
+            let candidate = dir.join(if cfg!(windows) {
+                format!("{name}.exe")
+            } else {
+                name.to_owned()
+            });
+            candidate.is_file().then_some(candidate)
+        })
+    })
+}
+
+/// Factory for the direct Rust Julia kernel adapter.
 #[derive(Debug, Clone)]
 pub struct JuliaKernelFactory {
     config: JuliaKernelConfig,
@@ -96,28 +132,12 @@ impl scires_kernel::KernelFactory for JuliaKernelFactory {
     }
 }
 
-fn which(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let candidate = dir.join(if cfg!(windows) {
-                format!("{name}.exe")
-            } else {
-                name.to_owned()
-            });
-            candidate.is_file().then_some(candidate)
-        })
-    })
-}
-
-/// Long-lived Julia kernel supervised through a Jupyter-compatible bridge.
+/// Long-lived out-of-process Julia kernel supervised directly over ZeroMQ.
 pub struct JuliaKernel {
     config: JuliaKernelConfig,
     status: KernelStatus,
-    child: Option<Child>,
-    stdin: Option<BufWriter<ChildStdin>>,
-    stdout: Option<BufReader<std::process::ChildStdout>>,
+    session: Option<JuliaSession>,
     handshake: Option<KernelHandshake>,
-    count: u64,
 }
 
 impl JuliaKernel {
@@ -126,43 +146,9 @@ impl JuliaKernel {
         Self {
             config,
             status: KernelStatus::NotStarted,
-            child: None,
-            stdin: None,
-            stdout: None,
+            session: None,
             handshake: None,
-            count: 0,
         }
-    }
-
-    fn send(&mut self, command: Value) -> Result<Value, KernelError> {
-        let stdin = self
-            .stdin
-            .as_mut()
-            .ok_or_else(|| KernelError::Startup("bridge is not started".into()))?;
-        serde_json::to_writer(&mut *stdin, &command).map_err(|error| {
-            KernelError::Startup(format!("failed to encode bridge command: {error}"))
-        })?;
-        stdin
-            .write_all(b"\n")
-            .and_then(|_| stdin.flush())
-            .map_err(|error| {
-                KernelError::Startup(format!("failed to write bridge command: {error}"))
-            })?;
-
-        let stdout = self
-            .stdout
-            .as_mut()
-            .ok_or_else(|| KernelError::Startup("bridge has no stdout".into()))?;
-        let mut line = String::new();
-        let read = stdout.read_line(&mut line).map_err(|error| {
-            KernelError::Startup(format!("failed to read bridge reply: {error}"))
-        })?;
-        if read == 0 {
-            return Err(KernelError::Startup("bridge exited without a reply".into()));
-        }
-        serde_json::from_str(&line).map_err(|error| {
-            KernelError::Startup(format!("bridge returned invalid JSON: {error}; {line}"))
-        })
     }
 }
 
@@ -183,113 +169,64 @@ impl Kernel for JuliaKernel {
     }
 
     fn start(&mut self) -> Result<(), KernelError> {
-        if !self.config.bridge_script.is_file() {
-            return Err(KernelError::Startup(format!(
-                "bridge script not found: {}",
-                self.config.bridge_script.display()
-            )));
+        self.status = KernelStatus::Starting;
+        match JuliaSession::launch(&self.config) {
+            Ok(session) => {
+                self.handshake = Some(session.handshake().clone());
+                self.session = Some(session);
+                self.status = KernelStatus::Idle;
+                Ok(())
+            }
+            Err(error) => {
+                self.session = None;
+                self.status = KernelStatus::Failed;
+                Err(error)
+            }
         }
-        let mut child = Command::new(&self.config.python)
-            .arg(&self.config.bridge_script)
-            .arg("--julia")
-            .arg(&self.config.julia)
-            .arg("--project")
-            .arg(&self.config.project)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|error| {
-                KernelError::Startup(format!(
-                    "failed to start Jupyter bridge {}: {error}",
-                    self.config.python.display()
-                ))
-            })?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| KernelError::Startup("Jupyter bridge stdin is unavailable".into()))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| KernelError::Startup("Jupyter bridge stdout is unavailable".into()))?;
-        self.stdin = Some(BufWriter::new(stdin));
-        self.stdout = Some(BufReader::new(stdout));
-        self.child = Some(child);
-
-        let reply = self.send(json!({"command": "start"}))?;
-        if reply["ok"] != true {
-            return Err(KernelError::Startup(
-                reply["error"]
-                    .as_str()
-                    .unwrap_or("unknown startup failure")
-                    .into(),
-            ));
-        }
-        let info: KernelInfo = serde_json::from_value(reply["info"].clone()).map_err(|error| {
-            KernelError::Startup(format!("invalid kernel info from bridge: {error}"))
-        })?;
-        self.handshake = Some(KernelHandshake::new(
-            info,
-            KernelCapabilities {
-                execute: true,
-                interrupt: false,
-                shutdown: true,
-                restart: true,
-            },
-        ));
-        self.status = KernelStatus::Idle;
-        Ok(())
     }
 
     fn execute(&mut self, req: &ExecuteRequest) -> Result<ExecuteResult, KernelError> {
         if self.status != KernelStatus::Idle {
             return Err(KernelError::InvalidStatus(self.status));
         }
+        let session = self
+            .session
+            .as_mut()
+            .ok_or(KernelError::InvalidStatus(self.status))?;
+
         self.status = KernelStatus::Busy;
-        let reply = self.send(json!({"command": "execute", "code": req.code}));
-        self.status = KernelStatus::Idle;
-        let reply = reply?;
-        if reply["ok"] != true {
-            return Err(KernelError::Execution {
-                ename: reply["ename"].as_str().unwrap_or("ExecutionError").into(),
-                evalue: reply["evalue"]
-                    .as_str()
-                    .unwrap_or("execution failed")
-                    .into(),
-            });
-        }
-        #[derive(Deserialize)]
-        struct BridgeOutput {
-            kind: String,
-            data: String,
-        }
-        let outputs: Vec<BridgeOutput> =
-            serde_json::from_value(reply["outputs"].clone()).map_err(|error| {
-                KernelError::Execution {
-                    ename: "ProtocolError".into(),
-                    evalue: format!("invalid bridge outputs: {error}"),
+        let result = session.execute(req);
+        match &result {
+            Ok(_) | Err(KernelError::Execution { .. }) | Err(KernelError::Interrupted) => {
+                if session.check_alive().is_ok() {
+                    self.status = KernelStatus::Idle;
+                } else {
+                    self.status = KernelStatus::Failed;
                 }
-            })?;
-        self.count = reply["execution_count"].as_u64().unwrap_or(self.count + 1);
-        Ok(ExecuteResult {
-            execution_count: self.count,
-            outputs: outputs
-                .into_iter()
-                .map(|output| match output.kind.as_str() {
-                    "stderr" => Output::Stderr(output.data),
-                    "display" => Output::Display {
-                        mime: "text/plain".into(),
-                        data: output.data,
-                    },
-                    _ => Output::Stdout(output.data),
-                })
-                .collect(),
-        })
+            }
+            Err(KernelError::Transport(_)) => {
+                self.status = KernelStatus::Failed;
+            }
+            Err(_) => {
+                if session.check_alive().is_ok() {
+                    self.status = KernelStatus::Idle;
+                } else {
+                    self.status = KernelStatus::Failed;
+                }
+            }
+        }
+        result
     }
 
     fn interrupt(&mut self) -> Result<(), KernelError> {
-        Err(KernelError::CapabilityUnavailable("interrupt"))
+        let Some(control) = self.control() else {
+            return Err(KernelError::InvalidStatus(self.status));
+        };
+        control.interrupt()
+    }
+
+    fn control(&self) -> Option<Arc<dyn KernelControl>> {
+        self.session.as_ref().map(JuliaSession::control_handle)
     }
 
     fn variables(&mut self) -> Result<Vec<Variable>, KernelError> {
@@ -297,40 +234,21 @@ impl Kernel for JuliaKernel {
     }
 
     fn shutdown(&mut self) -> Result<(), KernelError> {
-        if let (Some(_), true) = (&mut self.stdin, self.child.is_some()) {
-            let reply = self.send(json!({"command": "shutdown"}));
-            match reply {
-                Ok(reply) if reply["ok"] == true => {}
-                Ok(reply) => {
-                    return Err(KernelError::Startup(
-                        reply["error"].as_str().unwrap_or("shutdown failed").into(),
-                    ))
-                }
-                Err(error) => return Err(error),
-            }
+        if let Some(mut session) = self.session.take() {
+            let res = session.shutdown();
+            self.status = KernelStatus::Stopped;
+            return res;
         }
-        if let Some(mut child) = self.child.take() {
-            let _ = child.wait();
-        }
-        self.stdin = None;
-        self.stdout = None;
-        self.status = KernelStatus::Dead;
+        self.status = KernelStatus::Stopped;
         Ok(())
     }
 
     fn restart(&mut self) -> Result<(), KernelError> {
-        if matches!(self.status, KernelStatus::NotStarted | KernelStatus::Dead) {
-            return self.start();
+        self.status = KernelStatus::Restarting;
+        if let Some(mut session) = self.session.take() {
+            let _ = session.shutdown();
         }
-        let reply = self.send(json!({"command": "restart"}))?;
-        if reply["ok"] != true {
-            return Err(KernelError::Startup(
-                reply["error"].as_str().unwrap_or("restart failed").into(),
-            ));
-        }
-        self.count = 0;
-        self.status = KernelStatus::Idle;
-        Ok(())
+        self.start()
     }
 
     fn handshake(&self) -> KernelHandshake {
@@ -343,7 +261,7 @@ impl Kernel for JuliaKernel {
                 },
                 KernelCapabilities {
                     execute: true,
-                    interrupt: false,
+                    interrupt: true,
                     shutdown: true,
                     restart: true,
                 },
@@ -352,118 +270,131 @@ impl Kernel for JuliaKernel {
     }
 }
 
-impl Drop for JuliaKernel {
-    fn drop(&mut self) {
-        if self.status != KernelStatus::NotStarted {
-            if let Ok(reply) = self.send(json!({"command": "shutdown"})) {
-                if reply["ok"] == true {
-                    if let Some(mut child) = self.child.take() {
-                        let _ = child.wait();
-                    }
-                }
-            }
-        }
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scires_kernel::KernelFactory;
+    use scires_kernel::{KernelFactory, Output, RequestId};
 
-    fn integration_config() -> Option<JuliaKernelConfig> {
-        let python = std::env::var_os("SCIRES_JULIA_PYTHON").map(PathBuf::from)?;
-        if !python.is_file() {
-            return None;
-        }
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|path| path.parent())
-            .map(ToOwned::to_owned)?;
-        let julia = which("julia")?;
-        Some(JuliaKernelConfig {
-            julia,
-            project: root.join("tests").join("julia"),
-            python,
-            bridge_script: root
-                .join("crates")
-                .join("scires-julia-kernel")
-                .join("julia_bridge.py"),
-        })
+    fn live_config() -> Option<JuliaKernelConfig> {
+        let project = std::env::var_os("SCIRES_JULIA_PROJECT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .expect("workspace root")
+                    .join("tests")
+                    .join("julia")
+            });
+        JuliaKernelConfig::discover(project)
     }
 
     #[test]
     fn julia_factory_targets_julia() {
-        let config = JuliaKernelConfig {
-            julia: PathBuf::from("julia"),
-            project: PathBuf::from("tests/julia"),
-            python: PathBuf::from("python"),
-            bridge_script: PathBuf::from("crates/scires-julia-kernel/julia_bridge.py"),
-        };
-        let factory = JuliaKernelFactory::new(config);
+        let factory = JuliaKernelFactory::new(JuliaKernelConfig::new("julia", "tests/julia"));
         assert_eq!(factory.language(), Language::Julia);
     }
 
     #[test]
-    fn julia_kernel_reports_versioned_handshake() {
-        let config = JuliaKernelConfig {
-            julia: PathBuf::from("julia"),
-            project: PathBuf::from("tests/julia"),
-            python: PathBuf::from("python"),
-            bridge_script: PathBuf::from("crates/scires-julia-kernel/julia_bridge.py"),
-        };
-        let kernel = JuliaKernel::new(config);
+    fn julia_kernel_reports_versioned_handshake_with_interrupt_and_no_profiles_yet() {
+        let kernel = JuliaKernel::new(JuliaKernelConfig::new("julia", "tests/julia"));
         let handshake = kernel.handshake();
         assert_eq!(handshake.api, "scires.kernel");
         assert_eq!(handshake.version, 1);
         assert_eq!(handshake.info.language, Language::Julia);
         assert!(handshake.capabilities.execute);
-        assert!(!handshake.capabilities.interrupt);
+        assert!(handshake.capabilities.interrupt);
         assert!(handshake.capabilities.shutdown);
         assert!(handshake.capabilities.restart);
+        assert!(handshake.value_profiles.is_empty());
+        assert!(kernel.control().is_none());
     }
 
     #[test]
-    #[ignore = "requires SCIRES_JULIA_PYTHON and the pinned Julia test environment"]
-    fn julia_bridge_round_trip_is_available_when_environment_is_configured() {
-        let Some(config) = integration_config() else {
-            return;
-        };
-        let mut kernel = JuliaKernel::new(config);
-        kernel.start().expect("Julia bridge should start");
-        assert_eq!(kernel.status(), KernelStatus::Idle);
-        assert_eq!(kernel.handshake().version, 1);
-
-        let result = kernel
-            .execute(&ExecuteRequest::new("println(\"rust-bridge-ok\")"))
-            .expect("Julia execution should succeed");
-        assert!(result.outputs.iter().any(|output| {
-            matches!(output, Output::Stdout(text) if text.contains("rust-bridge-ok"))
-        }));
-
-        let error = kernel
-            .execute(&ExecuteRequest::new("error(\"rust-bridge-error\")"))
-            .expect_err("Julia execution should return an execution error");
-        assert!(matches!(
-            error,
-            KernelError::Execution { ename, evalue }
-                if ename == "ExecutionError"
-                    && evalue.contains("rust-bridge-error")
+    fn start_with_missing_executable_transitions_to_failed() {
+        let mut kernel = JuliaKernel::new(JuliaKernelConfig::new(
+            "/nonexistent/scires-julia-binary",
+            "tests/julia",
         ));
+        let err = kernel.start().unwrap_err();
+        assert!(matches!(err, KernelError::Startup(_)));
+        assert_eq!(kernel.status(), KernelStatus::Failed);
+    }
 
-        kernel.restart().expect("Julia restart should succeed");
-        let result = kernel
-            .execute(&ExecuteRequest::new(
-                "isdefined(Main, :never_defined_in_restart)",
-            ))
-            .expect("Julia execution after restart should succeed");
-        assert!(result.execution_count >= 1);
+    #[test]
+    fn execute_before_start_returns_invalid_status() {
+        let mut kernel = JuliaKernel::new(JuliaKernelConfig::new("julia", "tests/julia"));
+        assert_eq!(
+            kernel.execute(&ExecuteRequest::new("1 + 1")),
+            Err(KernelError::InvalidStatus(KernelStatus::NotStarted))
+        );
+    }
 
-        kernel.shutdown().expect("Julia shutdown should succeed");
-        assert_eq!(kernel.status(), KernelStatus::Dead);
+    #[test]
+    #[ignore = "requires an instantiated Julia/IJulia project (set SCIRES_JULIA_PROJECT and optionally SCIRES_JULIA_EXE)"]
+    fn live_ijulia_round_trip_interrupt_restart_and_shutdown() {
+        let config = live_config().expect("Julia executable should be discoverable");
+        let mut kernel = JuliaKernel::new(config);
+        kernel.start().expect("IJulia kernel should start");
+        assert_eq!(kernel.status(), KernelStatus::Idle);
+
+        let handshake = kernel.handshake();
+        assert_eq!(handshake.version, 1);
+        assert_ne!(handshake.info.language_version, "unknown");
+        assert!(handshake.capabilities.interrupt);
+
+        let req = ExecuteRequest::new("scires_probe = 42; println(\"direct-zmq-ok\"); scires_probe")
+            .with_request_id(RequestId::new("live-req-1"));
+        let result = kernel.execute(&req).expect("Julia execution should succeed");
+        assert_eq!(result.request_id, RequestId::new("live-req-1"));
+        assert!(result
+            .outputs
+            .iter()
+            .any(|o| matches!(o, Output::Stdout(s) if s.contains("direct-zmq-ok"))));
+        assert!(result
+            .outputs
+            .iter()
+            .any(|o| matches!(o, Output::Display { mime, data } if mime == "text/plain" && data.trim() == "42")));
+
+        let err = kernel
+            .execute(&ExecuteRequest::new("error(\"direct-zmq-error\")"))
+            .expect_err("Julia error should surface");
+        assert!(
+            matches!(
+                &err,
+                KernelError::Execution { ename, evalue, traceback }
+                    if !ename.is_empty()
+                        && evalue.contains("direct-zmq-error")
+                        && !traceback.is_empty()
+            ),
+            "unexpected error: {err:?}"
+        );
+
+        // Concurrent interrupt via KernelControl while execute("sleep(30)") is in flight.
+        let control = kernel.control().expect("live kernel exposes control handle");
+        let interrupt_thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            control.interrupt()
+        });
+        let interrupted = kernel.execute(&ExecuteRequest::new("sleep(30)"));
+        interrupt_thread
+            .join()
+            .expect("interrupt thread should join")
+            .expect("interrupt_request should succeed");
+        assert_eq!(interrupted, Err(KernelError::Interrupted));
+        assert_eq!(kernel.status(), KernelStatus::Idle);
+
+        // Restart clears namespace.
+        kernel.restart().expect("restart should succeed");
+        let after_restart = kernel
+            .execute(&ExecuteRequest::new("isdefined(Main, :scires_probe)"))
+            .expect("execution after restart should succeed");
+        assert!(after_restart
+            .outputs
+            .iter()
+            .any(|o| matches!(o, Output::Display { mime, data } if mime == "text/plain" && data.trim() == "false")));
+
+        kernel.shutdown().expect("shutdown should succeed");
+        assert_eq!(kernel.status(), KernelStatus::Stopped);
     }
 }

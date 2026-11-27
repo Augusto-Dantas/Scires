@@ -8,9 +8,10 @@ and Arrow IPC as the initial typed data representation. `scires-kernel` currentl
 defines a Rust port and mock kernel, while `scires-interchange` implements the v1 Arrow
 value profile. The Julia test environment verifies IJulia/Jupyter lifecycle behavior
 and Rust↔Julia Arrow IPC for scalar, table, dense tensor and CSC values. The new
-`scires-julia-kernel` crate adds a bounded Rust supervisor and versioned local handshake
-over a Python Jupyter-client bridge; direct Rust Jupyter messaging and remote handshake
-exchange are not implemented.
+`scires-julia-kernel` crate now implements a direct Rust Jupyter/ZeroMQ supervisor
+(replacing the earlier Python bridge per [ADR-0010](0010-direct-rust-julia-transport.md))
+and versioned local handshake; live-kernel Arrow data-plane transfer and remote SciRes
+handshake exchange remain unimplemented.
 
 **Decision and implementation boundary:**
 
@@ -28,15 +29,14 @@ exchange are not implemented.
    a second Julia-specific wire protocol. On Julia 1.13.2, IJulia 1.34.4 was exercised
    through Jupyter Client 8.6.3 for launch, project selection, execute/result/stdout,
    execution errors, interrupt, graceful shutdown and a fresh restart. Arrow.jl 2.8.1
-   was used for the Rust↔Julia fixtures. The repository now has a bounded Rust
-   `JuliaKernel` supervisor and JSON-lines bridge in `scires-julia-kernel`. That bridge
-   uses Python `jupyter_client`; it validates Rust process supervision, execute, errors,
-   restart, shutdown and output normalization, but is not direct Rust ZeroMQ transport.
-   The synchronous Rust `Kernel` port cannot concurrently issue interrupt while blocked
-   in `execute`, so this adapter does not advertise interrupt. Jupyter message IDs and
-   parent headers provide underlying correlation and
-   output association. Keep Jupyter as an adapter choice, not a requirement for every
-   future language kernel.
+   was used for the Rust↔Julia fixtures. Per
+   [ADR-0010](0010-direct-rust-julia-transport.md), `crates/scires-julia-kernel` now
+   replaces the earlier Python `jupyter_client` bridge with direct Rust Jupyter/ZeroMQ
+   transport over pure-Rust `zeromq` + `tokio`, launching IJulia directly with an
+   ephemeral connection file and advertising `interrupt: true` via the thread-safe
+   `KernelControl` handle. Jupyter message IDs and parent headers provide underlying
+   correlation and output association. Keep Jupyter as an adapter choice, not a
+   requirement for every future language kernel.
 3. **Versioned API and capability negotiation.** Define the SciRes-facing handshake as
    an adapter-to-host contract, separate from the Jupyter protocol version and from the
    Arrow value-profile version:
@@ -52,7 +52,7 @@ exchange are not implemented.
      },
      "capabilities": {
        "execute": true,
-       "interrupt": false,
+       "interrupt": true,
        "shutdown": true,
        "restart": true
      },
@@ -113,22 +113,22 @@ exchange are not implemented.
 
 | Shape | Advantages | Costs / concerns |
 |---|---|---|
-| Jupyter messaging behind the SciRes API (**selected for Julia**) | Reuses established execute/status/output/interrupt/shutdown messages; IJulia lifecycle and core Arrow paths have now been exercised; Rust bridge process supervisor is implemented | Bridge is Python/Jupyter-client based, so direct Rust ZeroMQ transport, Rust-side interrupt, live Arrow data transfer and production lifecycle remain unimplemented |
+| Jupyter messaging behind the SciRes API (**selected for Julia**) | Reuses established execute/status/output/interrupt/shutdown messages; direct Rust ZeroMQ transport and concurrent `KernelControl::interrupt` are implemented and verified against IJulia (ADR-0010) | Live Arrow data-plane transfer (`value_profiles: []`), variable snapshots, remote SciRes handshake exchange, and production environment policy remain unimplemented |
 | Custom framed JSON over stdio, with separate Arrow frames | Simple process supervision and no socket discovery; can tailor messages to SciRes | Reimplements correlation, output channels, interrupt, shutdown, and compatibility semantics; framing and binary-transfer rules become SciRes-owned protocol |
 | Custom socket/JSON-RPC protocol | Explicit request/response methods and can support streaming | Still duplicates kernel semantics; endpoint discovery, lifecycle, framing, and compatibility need definition |
 | gRPC/Protobuf control and streaming | Strong schemas, generated clients, and bidirectional streaming | Additional toolchain and dependencies; does not provide Jupyter compatibility by itself and is premature before confirming Julia adapter needs |
 
 **Consequences:** Julia becomes the first reference for implementing the
-versioned kernel API and conformance tests. The repository now includes a pinned Julia
-test environment, lifecycle smoke test and bidirectional Rust↔Julia Arrow fixtures:
-`tests/julia/Project.toml`, `tests/julia/Manifest.toml`,
-`tests/julia_kernel_lifecycle.py`, and `tests/julia_arrow_interop.py`. This validates
-IJulia/Jupyter via Python's Jupyter Client and the listed Arrow payloads only. The Rust
-supervisor uses a JSON-lines Python bridge; it is not a direct Rust Jupyter transport or
-live Arrow data path and does not prove all profile types. Later Python and R adapters
-may reuse host-side lifecycle, correlation, capability and Arrow contracts without
-implying that their runtimes share Julia's launch or protocol details. C/C++ task workers
-remain out of scope.
+versioned kernel API and conformance tests. The repository includes a pinned Julia test
+environment, external lifecycle conformance script, and bidirectional file-based
+Rust↔Julia Arrow fixtures (`tests/julia/Project.toml`, `tests/julia/Manifest.toml`,
+`tests/julia_kernel_lifecycle.py`, and `tests/julia_arrow_interop.py`). Per ADR-0010,
+`crates/scires-julia-kernel` now uses direct Rust Jupyter/ZeroMQ transport without a
+Python bridge; however, live-kernel Arrow data-plane transfer (`value_profiles: []`),
+variable snapshots, remote SciRes handshake exchange, and full profile interoperability
+remain unimplemented. Later Python and R adapters may reuse host-side lifecycle,
+correlation, capability and Arrow contracts without implying that their runtimes share
+Julia's launch or protocol details. C/C++ task workers remain out of scope.
 
 **Security boundary:** A child process isolates crashes but inherits the launching
 user's operating-system permissions unless an operating-system sandbox is separately
@@ -138,18 +138,24 @@ execution, what environment mutations require confirmation, and whether resource
 or OS-level confinement are in scope remain open. Plugin trust and WASM/process-plugin
 permissions are separate concerns covered by ADR-0006 and `PLUGINS.md`.
 
-**Validation plan:** The Julia/IJulia versions and executable/project selection,
-execution output/error, interrupt, shutdown and fresh-process restart have been tested
-by `python tests/julia_kernel_lifecycle.py`. The Rust bridge integration test covers
-startup, execution/output, errors, restart and shutdown, and asserts that interrupt is
-not advertised. Bidirectional Rust↔Julia Arrow tests cover the listed payloads via
-`python tests/julia_arrow_interop.py`. Next, test direct Rust Jupyter message correlation,
-remote API/profile negotiation, process-exit handling, timeout escalation, and UI state
-transitions. Extend interoperability coverage to complex values, supported temporal,
-binary and table types, and larger data. Do not infer Julia support for other versions
-or any Python/R/C++ kernel.
+**Validation plan:** Direct Rust Jupyter/ZeroMQ control-plane behavior (startup,
+`kernel_info` handshake, stdout/MIME execution output, structured errors with tracebacks,
+concurrent `KernelControl::interrupt`, restart clearing namespace, and graceful shutdown)
+has been verified against live Julia 1.12.5 + IJulia 1.34.4 in `crates/scires-julia-kernel`.
+`tests/julia_kernel_lifecycle.py` remains as an external IJulia conformance fixture, and
+`tests/julia_arrow_interop.py` covers file-based Rust↔Julia Arrow IPC for the listed
+payloads only (not live-kernel Arrow transfer). Next, implement and test live-kernel
+Arrow data-plane transport (`scires.value` v1), remote API/profile negotiation, variable
+snapshots, and UI state transitions, and extend interoperability coverage to complex
+values, supported temporal/binary/table types, and larger data. Do not infer Julia
+support for other versions or any Python/R/C++ kernel.
 
-**Highest-priority remaining decision:** Decide whether to replace the Python
-Jupyter-client bridge with direct Rust ZeroMQ transport or keep the bridge as a supported
-runtime dependency. Then add asynchronous request handling for interrupt/correlation and
-define and exercise remote API and Arrow profile negotiation before production use.
+**Highest-priority remaining decision (resolved by ADR-0010; control plane implemented):**
+[ADR-0010](0010-direct-rust-julia-transport.md) replaced the Python Jupyter-client bridge
+with direct Rust Jupyter/ZeroMQ transport over pure-Rust `zeromq` + `tokio` inside
+`crates/scires-julia-kernel` while keeping `scires-kernel` pure and retaining
+`tests/julia_kernel_lifecycle.py` only as an external conformance fixture. The pure
+kernel contract evolution (`RequestId`, `KernelControl`, lifecycle states, handshake
+validation, and opaque Arrow transfer port) and direct Rust ZeroMQ control plane are now
+implemented. Live-kernel Arrow data-plane transfer (`value_profiles: []`), variable
+snapshots, and remote SciRes handshake exchange remain pending (Slice 3+).

@@ -24,7 +24,10 @@
 
 use scires_core::{EventBus, InMemoryEventBus, Language, Workspace};
 use scires_debug::BreakpointStore;
-use scires_kernel::{ExecuteRequest, ExecuteResult, KernelError, KernelFactory, KernelManager};
+use scires_kernel::{
+    ExecuteRequest, ExecuteResult, KernelControl, KernelError, KernelFactory, KernelHandshake,
+    KernelManager,
+};
 use scires_plugin::{ActivationEvent, PluginError, PluginManifest, PluginRegistry};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,8 +69,14 @@ pub enum Command {
     ToggleBreakpoint(PathBuf, u32),
     /// Clear workspace (optionally a single language).
     ClearWorkspace(Option<Language>),
+    /// Interrupt an active kernel execution.
+    InterruptKernel(Language),
+    /// Shut down a running kernel.
+    ShutdownKernel(Language),
     /// Restart a kernel.
     RestartKernel(Language),
+    /// Query the validated handshake of a running kernel, if started.
+    KernelHandshake(Language),
     /// Install a plugin from manifest text.
     InstallPlugin(String),
 }
@@ -83,6 +92,8 @@ pub enum Reply {
     Breakpoint(bool),
     /// Installed plugin id.
     PluginInstalled(String),
+    /// Validated handshake for a running kernel, or `None` if not started.
+    Handshake(Option<KernelHandshake>),
 }
 
 /// The application facade.
@@ -132,6 +143,11 @@ impl App {
         self.kernels.register(factory);
     }
 
+    /// Thread-safe control handle for a running kernel, if available.
+    pub fn kernel_control(&self, language: &Language) -> Option<Arc<dyn KernelControl>> {
+        self.kernels.control(language)
+    }
+
     /// Mark enabled plugins interested in `event` as activated, in dependency order.
     fn fire(&mut self, event: &ActivationEvent) -> Result<(), AppError> {
         for id in self.plugins.activation_order()? {
@@ -174,10 +190,22 @@ impl App {
                 self.workspace.clear(l.as_ref());
                 Ok(Reply::Ok)
             }
+            Command::InterruptKernel(l) => {
+                self.kernels.interrupt(&l)?;
+                Ok(Reply::Ok)
+            }
+            Command::ShutdownKernel(l) => {
+                self.kernels.shutdown(&l)?;
+                self.workspace.clear(Some(&l));
+                Ok(Reply::Ok)
+            }
             Command::RestartKernel(l) => {
                 self.kernels.restart(&l)?;
                 self.workspace.clear(Some(&l));
                 Ok(Reply::Ok)
+            }
+            Command::KernelHandshake(l) => {
+                Ok(Reply::Handshake(self.kernels.handshake(&l).cloned()))
             }
             Command::InstallPlugin(src) => {
                 let m = PluginManifest::from_toml(&src)?;
@@ -238,5 +266,49 @@ mod tests {
         })
         .unwrap();
         assert_eq!(app.plugins().state("scires.r"), Some(&PluginState::Active));
+    }
+
+    #[test]
+    fn kernel_handshake_interrupt_and_shutdown_commands() {
+        let mut app = App::default();
+        app.register_kernel(Arc::new(EchoKernelFactory::new(Language::Julia)));
+
+        let before = app
+            .dispatch(Command::KernelHandshake(Language::Julia))
+            .unwrap();
+        assert!(matches!(before, Reply::Handshake(None)));
+
+        app.dispatch(Command::Execute {
+            language: Language::Julia,
+            code: "x = 7".into(),
+        })
+        .unwrap();
+
+        let after = app
+            .dispatch(Command::KernelHandshake(Language::Julia))
+            .unwrap();
+        assert!(matches!(
+            after,
+            Reply::Handshake(Some(h)) if h.api == "scires.kernel" && h.version == 1
+        ));
+        assert!(app.kernel_control(&Language::Julia).is_some());
+
+        app.dispatch(Command::InterruptKernel(Language::Julia))
+            .unwrap();
+        let err = app
+            .dispatch(Command::Execute {
+                language: Language::Julia,
+                code: "y = 8".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, AppError::Kernel(KernelError::Interrupted)));
+
+        app.dispatch(Command::ShutdownKernel(Language::Julia))
+            .unwrap();
+        assert!(app.workspace().is_empty());
+        let stopped = app
+            .dispatch(Command::KernelHandshake(Language::Julia))
+            .unwrap();
+        assert!(matches!(stopped, Reply::Handshake(None)));
     }
 }

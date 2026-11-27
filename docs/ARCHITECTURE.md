@@ -50,7 +50,7 @@ flowchart TD
 |---------|-------|--------------|
 | Workspace | `scires-core` | `Workspace`, `Variable`, `Value`, `Language` |
 | Execution | `scires-kernel` | `Kernel`, `KernelFactory`, `KernelManager`, `ExecuteRequest` |
-| Julia adapter | `scires-julia-kernel` | Rust supervisor and Jupyter-client bridge for the reference kernel |
+| Julia adapter | `scires-julia-kernel` | Direct Rust Jupyter/ZeroMQ supervisor for the reference kernel |
 | Interchange | `scires-interchange` | Versioned Arrow IPC scalar, table, tensor and CSC profile |
 | Debugging | `scires-debug` | `DebugSession`, `DebugState`, `Breakpoint`, `DebugAdapter` |
 | Extensibility | `scires-plugin` | `PluginManifest`, `Contributions`, `PluginRegistry` |
@@ -139,17 +139,23 @@ arbitrary native libraries into its process.
 The interchange profile serializes and decodes Arrow IPC streams in memory; process
 transport for Arrow values and most language-specific adapters remain unimplemented.
 
-**Julia reference kernel (bounded implementation):** ADR-0009 defines Jupyter messaging
-for Julia behind SciRes Kernel API v1, with Arrow IPC as a separate typed data plane.
-`crates/scires-julia-kernel` now provides a Rust-supervised Julia adapter that
-launches its `julia_bridge.py`, advertises the v1 handshake, executes code, restarts and
-shuts down. The bridge uses Python `jupyter_client` to connect to IJulia and is a
-vertical-slice implementation, not a direct Rust ZeroMQ transport. The pinned
-`tests/julia` environment verifies IJulia/Jupyter lifecycle behavior and the Arrow cases
-listed above. Rust-side interrupt is intentionally not advertised by this synchronous
-bridge. Live Arrow transfer, variable snapshots, direct Rust ZeroMQ,
-complex interoperability, remote handshake exchange, and all Python/R/C++ adapters
-remain unverified.
+**Julia reference kernel (control plane implemented; data plane pending):** ADR-0009
+defines Jupyter messaging for Julia behind SciRes Kernel API v1, with Arrow IPC as a
+separate typed data plane. [ADR-0010](adr/0010-direct-rust-julia-transport.md)
+(**Accepted; implemented for control plane, live Arrow data plane pending**) replaced the
+earlier Python `jupyter_client`/`pyzmq` bridge (`julia_bridge.py` removed) with direct
+Rust Jupyter/ZeroMQ transport over pure-Rust `zeromq` and `tokio` inside
+`crates/scires-julia-kernel`, keeping `scires-kernel` pure and transport-agnostic and
+retaining `tests/julia_kernel_lifecycle.py` only as an external IJulia conformance
+fixture. `crates/scires-julia-kernel` launches IJulia directly with an ephemeral
+connection file, performs `kernel_info` handshake, correlates `RequestId` execution and
+MIME outputs, advertises `interrupt: true` via the thread-safe `KernelControl` handle,
+restarts, and shuts down (verified live against Julia 1.12.5 + IJulia 1.34.4). The
+adapter still advertises `value_profiles: []`: live-kernel Arrow data-plane transfer
+(Slice 3+), variable snapshots, remote SciRes handshake exchange, complex
+interoperability, and all Python/R/C++ adapters remain unimplemented and unverified;
+file-based Arrow fixtures (`tests/julia_arrow_interop.py`) do not prove live-kernel Arrow
+transport.
 
 **Generalizable kernel contract:** Julia is the first adapter candidate, not a special
 shared runtime. A future adapter should negotiate the SciRes API and supported
@@ -253,9 +259,9 @@ stateDiagram-v2
 | Work | Depends on / exit gate | Status |
 |------|------------------------|--------|
 | Core ports/mocks, plugin manifest/registry, plot model and Arrow v1 profile | Unit/schema tests and Arrow format fixture | Implemented; no concrete runtime adapter |
-| Specify the versioned kernel API: handshake, capabilities, request correlation, lifecycle, errors and output events | Keep process transport and language-specific details behind adapters | API v1 handshake shape implemented for the Julia adapter; direct request correlation and async lifecycle remain to complete |
-| Validate the Julia reference boundary and environment policy (ADR-0009) | Demonstrate a supported Julia/Jupyter path and real Julia Arrow/CSC conversions | IJulia/Jupyter lifecycle plus scalar/table/tensor/CSC Rust↔Julia Arrow cases tested; direct Rust transport and live Arrow transfer unverified |
-| Implement the Julia process supervisor and adapter | API contract and feasibility gate above; environment discovery, cancellation, interrupt, restart and diagnostics | Bounded Rust bridge implementation exists; direct Jupyter transport, interrupt testing in Rust, live Arrow transfer and diagnostics remain |
+| Specify the versioned kernel API: handshake, capabilities, request correlation, lifecycle, errors and output events | Keep process transport and language-specific details behind adapters | API v1 contract (`RequestId`, `KernelControl`, lifecycle states, handshake validation, opaque Arrow transfer port) implemented in `scires-kernel` and `scires-app`; remote handshake exchange remains pending |
+| Validate the Julia reference boundary and environment policy (ADR-0009) | Demonstrate a supported Julia/Jupyter path and real Julia Arrow/CSC conversions | Direct Rust ZeroMQ control plane verified on Julia 1.12.5 + IJulia 1.34.4; file-based scalar/table/tensor/CSC Rust↔Julia Arrow fixtures tested; live-kernel Arrow data-plane transfer unimplemented |
+| Implement the Julia process supervisor and adapter (ADR-0010) | API contract and feasibility gate above; direct Rust ZeroMQ transport, environment discovery, cancellation, interrupt, restart and diagnostics | ADR-0010 control plane implemented (pure-Rust `zeromq` + `tokio`, concurrent `KernelControl::interrupt`, restart, shutdown; `julia_bridge.py` removed); live Arrow data-plane transfer (`value_profiles: []`), variable snapshots, and diagnostics/policy polish remain pending |
 | Build the Rust-native workbench from the UI/UX spec | `scires-app` commands/events and stable kernel/output/transfer states | UI model only; egui recommended for first spike, no shell |
 | Connect variable, plot and debug panels | Kernel summaries and MIME events; Renderer contract; DAP capability/lifecycle alignment | Domain models/ports exist; integrations unimplemented |
 | Define plugin trust, runtime permissions, package/install and environment policy | Threat model, archive/signature policy and explicit process/WASM enforcement | Manifest/registry only; distribution and sandboxing unimplemented |

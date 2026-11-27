@@ -1,20 +1,30 @@
 # SciRes Julia kernel adapter
 
-This crate contains the first Julia kernel adapter, outside the toolkit-agnostic
-`scires-kernel` port. The minimal reference adapter supervises `julia_bridge.py`, which
-uses Python's `jupyter_client` package to launch and control IJulia in a separate process.
+This crate implements the Julia kernel adapter outside the pure `scires-kernel` port,
+following ADR-0010.
 
-The bridge is a vertical-slice implementation, not a production transport. Its
-synchronous control path supports startup, code execution, output/error normalization,
-restart, and shutdown. It does not yet support interrupt from Rust, variable snapshots,
-or transferring Arrow payloads to a live kernel.
+`JuliaKernel` launches an out-of-process IJulia kernel directly via `julia` using an
+ephemeral loopback Jupyter connection file (`127.0.0.1`, HMAC-SHA256) and communicates
+over pure-Rust ZeroMQ (`zeromq` + `tokio`) with **no Python runtime dependency**.
 
-For the Julia conformance environment, instantiate `tests/julia/Project.toml` and install
-the Python dependencies listed in `tests/requirements-julia-kernel.txt`. Set
-`SCIRES_JULIA_PYTHON` to the Python executable containing those dependencies when running
-the Rust integration test. Run it explicitly with:
+Supported operations:
+- Direct `kernel_info_request` handshake and SciRes Kernel API v1 capability advertisement
+- Correlated `execute_request` (`RequestId` ↔ Jupyter `msg_id`), preserving stdout/stderr,
+  full MIME display bundles, and structured `ename`/`evalue`/`traceback` execution errors
+- Concurrent out-of-band interruption via `KernelControl::interrupt()` over the Jupyter
+  `control` channel (`interrupt_request`) with process termination escalation on timeout
+- Graceful `shutdown`, fresh-process `restart`, and unexpected exit detection (`Failed`)
 
-```powershell
-$env:SCIRES_JULIA_PYTHON = "path\to\python.exe"
-cargo test -p scires-julia-kernel -- --ignored
+Arrow data-plane transfer (`scires.value` v1) is planned for Phase 2 Slice 3 and is not
+advertised in `value_profiles` yet.
+
+## Running the live IJulia integration test
+
+Instantiate a Julia project containing `IJulia` (for example `tests/julia` or a temporary
+copy) and run:
+
+```sh
+SCIRES_JULIA_PROJECT=/path/to/project cargo test -p scires-julia-kernel -- --ignored
 ```
+
+Set `SCIRES_JULIA_EXE` if `julia` is not on `PATH` (Linux also checks `/snap/bin/julia`).
