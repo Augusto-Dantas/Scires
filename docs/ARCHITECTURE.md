@@ -6,15 +6,19 @@
    language runtimes. Adapters implement traits defined in the domain.
 2. **Rust-native IDE and orchestration** — the IDE shell and application orchestration
    are Rust. The native UI toolkit is not yet selected.
-3. **Process isolation for language runtimes** — Julia, Python, R and C/C++ kernels run
-   as separate long-lived processes. Compiled C/C++ tasks use isolated workers. A
-   crashing worker never takes down the IDE.
+3. **Process isolation for language runtimes** — the target architecture runs Julia,
+   Python and R kernels, and compiled C/C++ tasks, in separate worker processes. This is
+   a crash boundary, not by itself a security sandbox; concrete supervisors are not yet
+   implemented.
 4. **Versioned kernel boundary** — a versioned SciRes kernel API defines host/kernel
    capabilities. Jupyter-compatible messaging is used where it fits; small control
    messages use JSON or Protobuf.
-5. **Everything is a plugin** — built-in language support is shipped as plugins using
-   the same public API as third parties (VS Code / Eclipse / JupyterLab model).
+5. **Plugins contribute; kernels execute** — plugins declare and register capabilities.
+   A language kernel is a separately supervised runtime session, not the plugin's own
+   execution protocol or process.
 6. **Event driven** — state changes publish `DomainEvent`s; UI views subscribe.
+7. **Trust is explicit** — packaging, process separation and manifest validation do not
+   imply sandboxing, permissions enforcement or trust. Security policy must be explicit.
 
 ## 2. High-level view
 
@@ -26,6 +30,7 @@ flowchart TD
     APP --> DBG["scires-debug (sessions, breakpoints)"]
     APP --> PLG["scires-plugin (manifest, registry)"]
     APP --> VIZ["scires-viz (plot spec)"]
+    PLG -->|"registers kernel factories"| KER
     APP --> XFER["typed transfer service (Arrow IPC, copies)"]
     KER --> JL["Julia kernel (separate process)"]
     KER --> PY["Python kernel (separate process)"]
@@ -49,6 +54,10 @@ flowchart TD
 | Extensibility | `scires-plugin` | `PluginManifest`, `Contributions`, `PluginRegistry` |
 | Visualization | `scires-viz` | `PlotSpec`, `Layer`, `Mark`, `Renderer` |
 
+`scires-interchange` is a boundary codec, not a domain model. It owns Arrow IPC encoding
+and validation so Arrow implementation types do not leak into `scires-core::Value`,
+which remains a lightweight language-neutral summary.
+
 ## 4. Polyglot model
 
 Each language is a `Kernel` registered by a plugin through a `KernelFactory`. Rust
@@ -56,6 +65,15 @@ orchestrates a project workspace, but each kernel owns its own runtime state and
 namespace. The workspace is not a shared variable namespace or shared heap: values move
 between kernels only through explicit, typed transfer requests. `Value` summaries (type,
 shape and preview) support the variable explorer; a summary is not the transferred data.
+
+**Plugin and kernel boundary:** A plugin packages host-side contributions and may
+register a `KernelFactory`; the kernel is the language runtime session supervised by the
+host. The `process` plugin runtime (JSON-RPC over stdio) is not the Jupyter/SciRes kernel
+protocol. A Julia adapter may be a trusted host-side integration that launches a separate
+Julia process, but Julia code and project scripts must not execute inside the IDE process.
+The same distinction applies to Python and R. Compiled C/C++ tasks use worker processes
+and need not behave like persistent interactive REPLs; whether they share the complete
+kernel API or only its task/capability subset remains open.
 
 **Apache Arrow IPC is the preferred initial interchange representation.** Start with
 copy-based transport. The initial transferable set is:
@@ -115,6 +133,42 @@ the proposed boundary for converting zero-based CSC wire indices to Julia indexi
 This is a planning proposal only: IJulia/Jupyter and Julia Arrow interoperability have
 not been verified, and no Julia kernel adapter exists yet.
 
+**Generalizable kernel contract:** Julia is the first adapter candidate, not a special
+shared runtime. A future adapter should negotiate the SciRes API and supported
+`scires.value` profile versions, report only capabilities it implements, correlate
+requests and outputs, and map execution, interruption, errors and shutdown into the host
+contract. Each runtime may use a different underlying protocol; Jupyter compatibility
+is an adapter choice, not a requirement imposed on every language. No Python, R or C/C++
+adapter is implemented or validated by the Arrow profile.
+
+**Project environments (proposed):** Resolve the Julia executable and project environment
+explicitly and show the selected runtime/environment before starting a kernel. Prefer a
+project's declared Julia environment when present, with user-level interpreter defaults
+and PATH discovery as possible fallbacks; do not silently install packages or change the
+project environment. Exact precedence, environment creation, version-manager support and
+lockfile policy remain open. Other languages should keep their native environment models
+behind their adapters rather than imposing a single cross-language package manager.
+
+**Visualization and debugging boundaries:** Kernels may emit structured MIME output,
+including the current `application/vnd.scires.plot+json` `PlotSpec`. `scires-app` should
+route validated plot specifications to a contributed `Renderer`; renderer choice and
+large-data handling remain separate from kernel execution. The current plot model embeds
+Float64 samples and has no Arrow-backed data reference. Debugging remains a DAP client
+boundary: the Julia adapter, kernel process and selected project environment must agree,
+but whether a debugger launches or attaches to a kernel and how a paused session affects
+console execution remain open. `scires-debug` currently provides domain state and ports,
+not concrete DAP or kernel integration.
+
+**Security and implementation status:** The manifest parser, validator and registry are
+implemented; plugin loading, package installation, WASM hosting, process supervision,
+trust prompts, permission enforcement and resource limits are not. `Runtime::Native` is
+the current manifest deserialization default, so documentation that calls WASM the
+third-party default describes a target policy, not enforced behavior. Native plugins
+must be treated as trusted host code. Separate kernel or plugin processes limit crash
+impact but do not prevent filesystem, network or secret access. WASM capability
+restrictions, process-plugin approval, archive extraction safety, signatures and update
+trust policy need implementation and threat review before third-party distribution.
+
 ## 5. Plugins
 
 A plugin is a directory with a `scires-plugin.toml`:
@@ -134,12 +188,14 @@ commands = [{ id = "python.selectInterpreter", title = "Select Python interprete
 "scires.arrow" = "^0.1"
 ```
 
-Lifecycle: `Installed → Enabled → Active → (Disabled | Failed)`. Activation is lazy
-(VS Code-style activation events) to keep start-up fast.
+Target lifecycle: `Installed → Enabled → Active → (Disabled | Failed)`. Activation is
+intended to be lazy (VS Code-style activation events) to keep start-up fast; the host
+loader and activation runtime are not implemented.
 
-Plugins declare a `runtime` — `declarative`, `native`, `wasm` (sandboxed, default for
-third parties) or `process` — and may contribute dockable `views`. The full authoring
-and build guide is [PLUGINS.md](PLUGINS.md) (ADR-0006).
+Plugins declare a `runtime` — `declarative`, `native`, `wasm` or `process` — and may
+contribute dockable `views`. WASM as the default for third-party code is a proposed host
+policy, not currently enforced by the manifest parser or a runtime. See
+[PLUGINS.md](PLUGINS.md) and ADR-0006 for the implementation boundary.
 
 ## 5a. UI
 
@@ -147,14 +203,20 @@ and build guide is [PLUGINS.md](PLUGINS.md) (ADR-0006).
 (`left | center | right | bottom`) of `Panel`s and `Theme` design tokens. The default
 `Layout::scientific()` mirrors Spyder/RStudio: Files · Editor · Variables/Plots ·
 Console/Debugger. The UI must be Rust-native; the specific native toolkit remains open
-(ADR-0007). The UI/UX prototype lives in Figma:
+(ADR-0007). The design proposal is in [UI_UX.md](UI_UX.md); it does not select a toolkit.
+The existing UI/UX prototype lives in Figma:
 <https://www.figma.com/design/mX6AQKKVN9mkPeRU6v44k1> (Main Window, Plugin Manager),
 with colour variables matching `Theme::dark()`.
 
 ## 6. Debugger
 
-Modeled on Spyder/VS Code: the IDE is a DAP client; each language provides a DAP adapter.
-`DebugSession` enforces a strict state machine:
+The IDE is a DAP client; each language may provide a DAP adapter (ADR-0004). A debug
+session should use the same selected runtime and project environment as the kernel it
+debugs, and its lifetime must be invalidated if that process exits or restarts.
+`scires-debug` models breakpoints and a session state machine, but it does not yet
+integrate a concrete DAP adapter with a kernel. Whether Julia debugging launches a
+separate debuggee or attaches to the interactive kernel, and whether the REPL may be
+used while paused, remain open.
 
 ```mermaid
 stateDiagram-v2
@@ -169,10 +231,17 @@ stateDiagram-v2
 
 ## 7. Roadmap
 
-1. ✅ Architecture & domain logic (this phase)
-2. Validate the proposed Julia reference-kernel boundary (ADR-0009), then implement the
-   versioned SciRes kernel API and Julia adapter
-3. Explicit typed Arrow IPC transfers with copy-based transport and conversion errors
-4. DAP client + Debugger.jl integration; isolated C/C++ task workers
-5. Rust-native UI shell (toolkit TBD) with editor, console, variable explorer and plots
-6. Plugin loading from disk and WASM sandboxing for untrusted plugins
+| Work | Depends on / exit gate | Status |
+|------|------------------------|--------|
+| Core ports/mocks, plugin manifest/registry, plot model and Arrow v1 profile | Unit/schema tests and Arrow format fixture | Implemented; no concrete runtime adapter |
+| Specify the versioned kernel API: handshake, capabilities, request correlation, lifecycle, errors and output events | Keep process transport and language-specific details behind adapters | Planning; current `Kernel` trait is smaller than the proposed contract |
+| Validate the Julia reference boundary and environment policy (ADR-0009) | Demonstrate a supported Julia/Jupyter path and real Julia Arrow/CSC conversions before choosing its control transport | Proposed; interoperability unverified |
+| Implement the Julia process supervisor and adapter | API contract and feasibility gate above; environment discovery, cancellation, interrupt, restart and diagnostics | Not implemented |
+| Build the Rust-native workbench from the UI/UX spec | `scires-app` commands/events and stable kernel/output/transfer states; toolkit remains open | UI model only; no shell |
+| Connect variable, plot and debug panels | Kernel summaries and MIME events; Renderer contract; DAP capability/lifecycle alignment | Domain models/ports exist; integrations unimplemented |
+| Define plugin trust, runtime permissions, package/install and environment policy | Threat model, archive/signature policy and explicit process/WASM enforcement | Manifest/registry only; distribution and sandboxing unimplemented |
+| Add Python and R adapters; define the C/C++ task-worker subset | Shared API conformance suite plus Julia reference implementation | Later; no interoperability claims |
+
+UI/UX design can proceed in parallel with kernel API and Julia feasibility work; the live
+shell should not assume transport-specific behavior. Third-party plugin distribution
+depends on the trust and isolation policy, not merely on the manifest format.

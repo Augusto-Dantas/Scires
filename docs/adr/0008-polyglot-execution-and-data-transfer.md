@@ -62,7 +62,8 @@ Rust unit/doc tests validate round-trips and malformed/unsupported values. The c
 does not test Julia, R or C/C++ interoperability.
 
 Remaining decisions include the native UI toolkit, kernel lifecycle and runtime adapters,
-process transport, control-message encoding, any lossy conversion API and conversion UX,
-and interop validation against Julia, R and C/C++ runtimes. ADR-0009 proposes a Julia-first
-reference-kernel boundary; it remains Proposed until the IJulia/Jupyter and Julia value
-interoperability assumptions are validated.
+process transport, control-message encoding, project/runtime environment policy, plugin
+trust and isolation, DAP/visualization integration, any lossy conversion API and
+conversion UX, and interop validation against Julia, R and C/C++ runtimes. ADR-0009
+proposes a Julia-first reference-kernel boundary; it remains Proposed until the
+IJulia/Jupyter and Julia value interoperability assumptions are validated.
