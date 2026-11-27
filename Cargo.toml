@@ -8,6 +8,7 @@ members = [
     "crates/scires-viz",
     "crates/scires-ui",
     "crates/scires-app",
+    "crates/scires-interchange",
 ]
 
 [workspace.package]
@@ -23,6 +24,10 @@ serde_json = "1"
 thiserror = "1"
 toml = "0.8"
 semver = { version = "1", features = ["serde"] }
+arrow-array = { version = "53.4.1", default-features = false }
+arrow-buffer = { version = "53.4.1", default-features = false }
+arrow-ipc = { version = "53.4.1", default-features = false }
+arrow-schema = { version = "53.4.1", default-features = false }
 scires-core = { path = "crates/scires-core" }
 scires-kernel = { path = "crates/scires-kernel" }
 scires-debug = { path = "crates/scires-debug" }
