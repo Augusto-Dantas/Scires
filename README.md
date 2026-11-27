@@ -1,13 +1,15 @@
 # SciRes
 
 **SciRes** is a scientific computing environment — an open alternative to MATLAB —
-centred on the **Julia** language and written in **Rust**.
+centred on the **Julia** language, with a Rust-native IDE and Rust orchestration.
 
 ## Goals
 
 - 🧮 **Julia-first** interactive environment (REPL, editor, workspace/variable explorer).
-- 🌐 **Polyglot kernels**: R for data analysis, Python for machine learning, C/C++ for
-  existing algorithms and performance-critical code — sharing one workspace.
+- 🌐 **Polyglot kernels**: separate Julia, R, Python, and C/C++ worker processes for
+  scripting, specialized tasks, performance-critical code, and legacy algorithms. They
+  participate in one project workspace through explicit typed data transfers, not a
+  shared variable namespace.
 - 📊 **Easy data visualization** through a declarative, backend-agnostic plot model.
 - 🐞 **Spyder-like debugger**: breakpoints, stepping, call stack, variable inspection
   (built on the Debug Adapter Protocol).

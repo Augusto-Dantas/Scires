@@ -4,24 +4,40 @@
 
 We record significant decisions as ADRs (Michael Nygard format) in `docs/adr/`.
 
-# ADR-0002: Out-of-process kernels via Jupyter protocol
+# ADR-0002: Out-of-process kernels behind a versioned SciRes API
 
 **Status:** Accepted
 
 **Context:** We must support Julia, Python, R and C/C++. Embedding interpreters couples
 crash domains and versions. Spyder and JupyterLab use out-of-process kernels.
 
-**Decision:** Kernels run as separate processes speaking the Jupyter messaging protocol.
-The domain only sees the `Kernel` trait, so in-process kernels remain possible for tests.
+**Decision:** Kernels run as separate processes behind a versioned SciRes kernel API.
+Jupyter-compatible messaging is used where it fits; small control messages use JSON or
+Protobuf. The domain only sees the `Kernel` trait, so in-process kernels remain possible
+for tests. Compiled C/C++ tasks use isolated worker processes, never arbitrary native
+libraries loaded into the IDE.
 
-**Consequences:** Reuses IJulia, ipykernel, IRkernel, xeus-cling. Adds IPC latency.
+**Consequences:** Reuses language kernels where they fit the API and accepts IPC latency
+in exchange for crash isolation. Protocol compatibility and feature negotiation belong
+to the versioned SciRes API, not directly to domain crates. See ADR-0008.
 
 # ADR-0003: Apache Arrow for cross-language data exchange
 
-**Status:** Proposed
+**Status:** Accepted
 
-**Decision:** Large arrays/tables shared between kernels use Arrow IPC / shared memory.
-The workspace stores only summaries (`Value`) for the variable explorer.
+**Decision:** Arrow IPC is the preferred initial representation for explicit typed
+cross-kernel transfers. Begin with copy-based transport; defer shared-memory buffers
+until benchmarks justify them and ownership/lifetime rules are defined. Dense
+N-dimensional fixed-width numeric and Boolean arrays preserve shape and type metadata;
+tables use supported Arrow primitive columns; complex values use real/imaginary pairs.
+Sparse values may use a typed COO representation with indices, values, and shape metadata,
+but must not be silently densified. Values without a defined mapping remain kernel-local
+unless explicitly converted; otherwise return an unsupported-value error. The workspace
+stores `Value` summaries for the variable explorer, not the transferred payload.
+
+Detailed schemas, numeric type coverage, nullability, memory order and conversion UX
+remain open. The Python-only comparison in `tests/bench_data_exchange.py` is exploratory
+and does not establish SciRes or Julia interoperability. See ADR-0008.
 
 # ADR-0004: Debug Adapter Protocol
 

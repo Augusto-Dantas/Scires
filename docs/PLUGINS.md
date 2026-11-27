@@ -12,7 +12,7 @@ acme.spectrum/
 ├── README.md
 ├── icon.svg             # 64×64, shown in the Plugin Manager
 ├── plugin.wasm          # entry (wasm runtime) — or bin/ executable (process runtime)
-└── assets/              # snippets, themes, view HTML, sample data
+└── assets/              # snippets, themes, view definitions, sample data
 ```
 
 ## 2. Manifest
@@ -85,7 +85,11 @@ scires plugin pack ./acme-spectrum           # validates manifest → acme.spect
 The host exposes **capabilities** (WIT imports) only if declared in the manifest:
 `workspace.read`, `workspace.write`, `kernel.execute`, `ui.view`, `fs.read-scoped`.
 No raw filesystem or network access by default. Large data crosses the boundary as
-Arrow IPC buffers (ADR-0003).
+Arrow IPC using copy-based transport initially (ADR-0003). A `ui.view` contribution is
+rendered by the Rust-native shell; this manifest does not imply an HTML/webview UI. The
+serialized view-content and extension contract remain to be defined.
+Workspace capabilities do not create a shared kernel namespace: cross-language values
+still require explicit typed transfer requests.
 
 ### 3.3 Process
 
