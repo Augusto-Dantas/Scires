@@ -18,7 +18,9 @@ centred on the **Julia** language, with a Rust-native IDE and Rust orchestration
 
 ## Status
 
-Phase 1 — **architecture and business logic** (no UI yet). See
+Phase 1 — **architecture and domain logic**. The Rust Arrow value profile is implemented;
+concrete language kernels and the workbench UI are not. The proposed workbench experience
+is documented in [`docs/UI_UX.md`](docs/UI_UX.md). See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the [ADRs](docs/adr).
 
 ## Layout
@@ -59,4 +61,6 @@ API documentation is generated with **rustdoc** across all workspace crates (inc
 cargo doc --no-deps --workspace --open
 ```
 
-Architecture notes, style conventions, and decision records live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/STYLE_GUIDE.md`](docs/STYLE_GUIDE.md), and [`docs/adr`](docs/adr).
+Architecture, UI/UX, style conventions, and decision records live in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/UI_UX.md`](docs/UI_UX.md),
+[`docs/STYLE_GUIDE.md`](docs/STYLE_GUIDE.md), and [`docs/adr`](docs/adr).

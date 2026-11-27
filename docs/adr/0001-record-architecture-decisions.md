@@ -30,14 +30,16 @@ cross-kernel transfers. Begin with copy-based transport; defer shared-memory buf
 until benchmarks justify them and ownership/lifetime rules are defined. Dense
 N-dimensional fixed-width numeric and Boolean arrays preserve shape and type metadata;
 tables use supported Arrow primitive columns; complex values use real/imaginary pairs.
-Sparse values may use a typed COO representation with indices, values, and shape metadata,
-but must not be silently densified. Values without a defined mapping remain kernel-local
-unless explicitly converted; otherwise return an unsupported-value error. The workspace
-stores `Value` summaries for the variable explorer, not the transferred payload.
+The implemented v1 profile uses CSC sparse matrices with Int64 offsets and indices,
+zero-based on the wire, and explicit runtime-boundary conversion; do not silently densify.
+Values without a defined mapping remain kernel-local unless explicitly converted;
+otherwise return an unsupported-value error. The workspace stores `Value` summaries
+for the variable explorer, not the transferred payload.
 
-Detailed schemas, numeric type coverage, nullability, memory order and conversion UX
-remain open. The Python-only comparison in `tests/bench_data_exchange.py` is exploratory
-and does not establish SciRes or Julia interoperability. See ADR-0008.
+The Rust codec and exact v1 profile are documented in ADR-0008. Julia/R/C++ runtime
+adapters, process transport and conversion UX remain open. The Python-only comparison in
+`tests/bench_data_exchange.py` is exploratory and does not establish SciRes or Julia
+interoperability. See ADR-0008 and proposed ADR-0009.
 
 # ADR-0004: Debug Adapter Protocol
 
@@ -45,6 +47,9 @@ and does not establish SciRes or Julia interoperability. See ADR-0008.
 
 **Decision:** The debugger is a DAP client. Adapters: Debugger.jl (Julia), debugpy (Python),
 vscDebugger (R), lldb-dap/gdb (C/C++).
+
+The repository currently defines debugger domain state and an adapter port; concrete
+adapters and kernel integration are not implemented.
 
 # ADR-0005: Manifest-based, lazily-activated plugins
 

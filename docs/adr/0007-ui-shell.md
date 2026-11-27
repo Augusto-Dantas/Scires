@@ -14,7 +14,8 @@ toolkit-agnostic.
 **Current direction:** The IDE UI must be Rust-native. egui and Slint remain candidates;
 the specific toolkit and component strategy have not been selected (ADR-0008). Design
 tokens in `scires_ui::Theme` remain the source of truth and are mirrored in the Figma
-prototype.
+prototype. The proposed workbench and interaction model is documented in
+[`UI_UX.md`](../UI_UX.md); it does not select a toolkit or implement a shell.
 
 **Consequences:** Tauri/web front-end and its embedded web components are not selected.
 Editor, plotting, console and plugin-view components must fit the eventual native toolkit

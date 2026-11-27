@@ -89,6 +89,14 @@ that their runtimes share Julia's launch or protocol details. C/C++ task workers
 out of scope here. This ADR does not select a final transport or claim working Julia
 interoperability.
 
+**Security boundary:** A child process isolates crashes but inherits the launching
+user's operating-system permissions unless an operating-system sandbox is separately
+implemented. Opening a project must not silently execute code or alter its Julia
+environment. Whether untrusted projects require an explicit trust action before kernel
+execution, what environment mutations require confirmation, and whether resource limits
+or OS-level confinement are in scope remain open. Plugin trust and WASM/process-plugin
+permissions are separate concerns covered by ADR-0006 and `PLUGINS.md`.
+
 **Validation plan:** Once the proposal is accepted, choose and pin a Julia/IJulia
 combination, then verify executable and project-environment selection; startup and
 capability negotiation; ordered output, structured errors, request correlation,

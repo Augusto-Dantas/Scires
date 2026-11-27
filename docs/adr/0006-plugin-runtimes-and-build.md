@@ -18,6 +18,16 @@ and polyglot authorship (scientists write Julia/Python, not Rust).
 `entry` is required for `wasm`/`process` and forbidden for `declarative`. Plugins ship as
 `.srp` archives. See [PLUGINS.md](../PLUGINS.md).
 
-**Consequences:** Third-party code is sandboxed by default; authors can use any language
-that targets WASM components. Native ABI stability is not promised. A WIT interface
-(`scires-plugin.wit`) becomes a versioned public API.
+**Consequences:** Under the target policy, third-party code is sandboxed by default and
+authors can use any language that targets WASM components. Native ABI stability is not
+promised. A WIT interface (`scires-plugin.wit`) becomes a versioned public API.
+
+**Implementation status and security boundary:** This is the target architecture, not a
+claim that the runtime policy is enforced today. The repository currently parses and
+validates manifests and resolves registry entries; it has no plugin loader, `.srp`
+installer, WASM host, process supervisor, permission enforcement or trust UI. The
+manifest's current runtime default is `native`, so third-party installation must not rely
+on that default: the future host must require an explicit safe runtime or an explicit
+trust decision. Kernel processes and `process` plugins are distinct boundaries. A
+separate process limits crash impact but still has its operating-system user's access;
+it is not a sandbox.
