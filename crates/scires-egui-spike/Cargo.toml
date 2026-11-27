@@ -1,0 +1,22 @@
+[package]
+name = "scires-egui-spike"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded egui native workbench spike validating docs/UI_UX.md against SciRes domain crates"
+
+[dependencies]
+eframe = { version = "0.27.2", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+egui_dock = "0.12.0"
+egui_plot = "0.27.2"
+scires-app = { path = "../scires-app" }
+scires-core = { workspace = true }
+scires-debug = { workspace = true }
+scires-kernel = { workspace = true }
+scires-ui = { workspace = true }
+scires-viz = { workspace = true }
+
+[lints]
+workspace = true

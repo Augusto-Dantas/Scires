@@ -14,17 +14,17 @@ Supported operations:
 - Concurrent out-of-band interruption via `KernelControl::interrupt()` over the Jupyter
   `control` channel (`interrupt_request`) with process termination escalation on timeout
 - Graceful `shutdown`, fresh-process `restart`, and unexpected exit detection (`Failed`)
+- Dedicated local loopback binary TCP Arrow IPC data plane (`scires.value` v1),
+  negotiated automatically during handshake when `Arrow.jl` is available in the Julia
+  project (leaving `value_profiles: []` if `Arrow.jl` is absent)
 
-Arrow data-plane transfer (`scires.value` v1) is planned for Phase 2 Slice 3 and is not
-advertised in `value_profiles` yet.
+## Running the live IJulia and Arrow data-plane integration tests
 
-## Running the live IJulia integration test
-
-Instantiate a Julia project containing `IJulia` (for example `tests/julia` or a temporary
-copy) and run:
+Instantiate a Julia project containing `IJulia` and `Arrow` (for example `tests/julia`
+or a temporary copy) and run:
 
 ```sh
-SCIRES_JULIA_PROJECT=/path/to/project cargo test -p scires-julia-kernel -- --ignored
+SCIRES_JULIA_PROJECT=/path/to/project cargo test -p scires-julia-kernel -- --ignored --nocapture
 ```
 
 Set `SCIRES_JULIA_EXE` if `julia` is not on `PATH` (Linux also checks `/snap/bin/julia`).

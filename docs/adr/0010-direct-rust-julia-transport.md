@@ -1,6 +1,6 @@
 # ADR-0010: Direct Rust Jupyter/ZeroMQ transport for the Julia kernel
 
-**Status:** Accepted (implemented for control plane; live Arrow data plane pending)
+**Status:** Accepted (implemented)
 
 **Context:** ADR-0009 established the Julia reference-kernel boundary using the Jupyter
 messaging protocol behind **SciRes Kernel API v1**, with Apache Arrow IPC on a separate
@@ -88,13 +88,22 @@ Several concrete limitations of the Python bridge now block Phase 2 work:
 
 **Implementation status and rollout:**
 
-This ADR is **Accepted (implemented for control plane; live Arrow data plane pending)**.
-Direct Rust Jupyter/ZeroMQ control-plane transport is implemented in
-`crates/scires-julia-kernel` using Option B: pure-Rust `zeromq 0.7` + `tokio` +
-`hmac`/`sha2` behind internal `protocol` and `transport` modules (zero C/C++/asm FFI and
-zero workspace `unsafe`). `julia_bridge.py` and the Python runtime dependency have been
-removed. Live-kernel Arrow data-plane transfer is **not yet implemented**; the adapter
-accurately advertises `value_profiles: []` until Slice 3 lands.
+This ADR is **Accepted (implemented)**. Both the direct Rust Jupyter/ZeroMQ control plane
+and the live-kernel loopback Arrow IPC data plane are implemented and live-verified in
+`crates/scires-julia-kernel` and wired into `crates/scires-app`:
+
+- **Control plane:** Implemented using Option B — pure-Rust `zeromq 0.7` + `tokio` +
+  `hmac`/`sha2` behind internal `protocol` and `transport` modules (zero C/C++/asm FFI
+  and zero workspace `unsafe`). `julia_bridge.py` and the Python runtime dependency have
+  been removed.
+- **Live Arrow data plane:** Implemented via a dedicated loopback TCP binary channel
+  (`127.0.0.1` ephemeral port + per-session random authentication token, length-prefixed
+  Arrow IPC frames — never embedded in Jupyter JSON) served by an embedded Julia helper
+  (`Main.__SciResDataPlane`, loaded dynamically on handshake/restart). The adapter
+  verifies the channel with a `ping` and advertises `scires.value` v1 only when `Arrow`
+  is available and verified (degrading cleanly to `value_profiles: []` if absent). Both
+  `import_value` and `export_value` validate identifiers and decode/verify payloads with
+  `scires-interchange`.
 
 Implementation sequence:
 
@@ -111,14 +120,15 @@ Implementation sequence:
    concurrent `KernelControl::interrupt()` via `control` channel with signal/kill
    escalation, crash→`Failed` detection, `restart`, and graceful `shutdown`.
 3. **Slice 3 — Live-kernel Arrow data-plane exchange** (`scires-julia-kernel`) —
-   **Pending (not yet implemented):** add a dedicated local loopback binary channel
-   carrying length-prefixed Arrow IPC streams between Rust (`scires-interchange`) and a
-   small Julia helper loaded on handshake, advertising `scires.value` v1 only once
-   verified.
+   **Implemented:** added `crates/scires-julia-kernel/julia/scires_dataplane.jl`
+   (`Main.__SciResDataPlane`) and `crates/scires-julia-kernel/src/dataplane.rs`
+   (`DataPlaneClient`) over an authenticated loopback TCP binary channel carrying
+   length-prefixed Arrow IPC streams, advertising `scires.value` v1 only when verified
+   and re-initializing cleanly across `restart`.
 4. **Slice 4 — Application transfer wiring and docs sync** (`scires-app`, `docs/`) —
-   **Pending (not yet implemented):** wire typed transfer commands gated by negotiated
-   `scires.value` v1 and update architecture documentation to reflect live Arrow
-   data-plane status.
+   **Implemented:** wired `Command::TransferValue` / `Reply::ValueTransferred` in
+   `scires-app` gated by negotiated `scires.value` v1 profiles, and synced architecture
+   documentation.
 
 **Validation plan:**
 
@@ -131,7 +141,14 @@ Implementation sequence:
   clearing the runtime namespace, and graceful shutdown → `Stopped`.
   `tests/julia_kernel_lifecycle.py` remains only as an external IJulia conformance
   fixture.
-- **Slice 3 (pending):** validate live Rust↔Julia Arrow IPC round-trips for scalars
-  (including null, NaN, and Complex64/128), tables, dense column-major tensors, and
-  0-based wire ↔ 1-based Julia `SparseMatrixCSC` matrices, plus explicit rejection of
-  unsupported or lossy conversions.
+- **Slice 3 & 4 (verified):** live Rust↔Julia data-plane integration test
+  (`crates/scires-julia-kernel/tests/live_arrow_dataplane.rs`) verified on Julia 1.12.5 +
+  IJulia 1.34.4 + Arrow 2.8.1 covering `scires.value` v1 handshake advertisement,
+  scalars (including `Int32`, `Null`/`missing`, `NaN`, UTF-8, and `Complex128`), tables
+  preserving `NaN` vs. `missing`, column-major dense `Int32` and `Complex128` tensors,
+  `Float64` CSC sparse matrices (0-based wire ↔ 1-based Julia `SparseMatrixCSC` via
+  `LargeList`), explicit rejection of unsupported Julia structs/functions leaving the
+  kernel healthy, and `restart` re-initialization. `scires-app` unit tests cover
+  `Command::TransferValue` both for negotiated transfers and `UnsupportedValueProfile`
+  rejection. Variable snapshots, UI workbench shell, DAP integration, plugin
+  loading/sandboxing, and Python/R/C++ adapters remain separate pending phases.

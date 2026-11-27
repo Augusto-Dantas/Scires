@@ -1,12 +1,13 @@
 //! Direct pure-Rust ZeroMQ + Tokio transport for an out-of-process IJulia kernel.
 
+use crate::dataplane::{DataPlaneClient, JULIA_DATAPLANE_SOURCE};
 use crate::protocol::{ConnectionInfo, ExecutionAccumulator, JupyterMessage, TempConnectionFile};
 use crate::JuliaKernelConfig;
 use bytes::Bytes;
 use scires_core::Language;
 use scires_kernel::{
     ExecuteRequest, ExecuteResult, KernelCapabilities, KernelControl, KernelError,
-    KernelHandshake, KernelInfo,
+    KernelHandshake, KernelInfo, Output, ValueProfile,
 };
 use serde_json::{json, Value};
 use std::process::{Child, Command, Stdio};
@@ -90,6 +91,7 @@ pub(crate) struct JuliaSession {
     iopub_rx: mpsc::UnboundedReceiver<Result<JupyterMessage, KernelError>>,
     _iopub_task: tokio::task::JoinHandle<()>,
     control: Arc<tokio::sync::Mutex<DealerSocket>>,
+    dataplane: Option<DataPlaneClient>,
     handshake: KernelHandshake,
     execute_timeout: Duration,
     interrupt_grace: Duration,
@@ -212,7 +214,7 @@ impl JuliaSession {
             },
         );
 
-        Ok(Self {
+        let mut session = Self {
             runtime,
             _conn_file: conn_file,
             key: conn.key,
@@ -222,11 +224,51 @@ impl JuliaSession {
             iopub_rx,
             _iopub_task: iopub_task,
             control: Arc::new(tokio::sync::Mutex::new(control)),
+            dataplane: None,
             handshake,
             execute_timeout: config.execute_timeout,
             interrupt_grace: config.interrupt_grace,
             shutdown_timeout: config.shutdown_timeout,
-        })
+        };
+
+        session.init_dataplane();
+        Ok(session)
+    }
+
+    fn init_dataplane(&mut self) {
+        let load_req = ExecuteRequest::new(JULIA_DATAPLANE_SOURCE).with_silent(true);
+        if self.execute(&load_req).is_err() {
+            return;
+        }
+        let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let start_req =
+            ExecuteRequest::new(format!("println(Main.__SciResDataPlane.start(\"{token}\"))"))
+                .with_silent(true);
+        let Ok(result) = self.execute(&start_req) else {
+            return;
+        };
+        let port = result.outputs.iter().find_map(|output| {
+            let Output::Stdout(text) = output else {
+                return None;
+            };
+            text.lines().find_map(|line| {
+                line.trim()
+                    .strip_prefix("PORT:")
+                    .and_then(|raw| raw.parse::<u16>().ok())
+            })
+        });
+        let Some(port) = port else {
+            return;
+        };
+        let client = DataPlaneClient::new(port, token, self.execute_timeout);
+        if client.ping().is_ok() {
+            self.dataplane = Some(client);
+            self.handshake.value_profiles = vec![ValueProfile::scires_v1()];
+        }
+    }
+
+    pub(crate) fn dataplane(&self) -> Option<&DataPlaneClient> {
+        self.dataplane.as_ref()
     }
 
     pub(crate) fn handshake(&self) -> &KernelHandshake {
@@ -337,6 +379,9 @@ impl JuliaSession {
 
     /// Gracefully shut down the Julia kernel via `shutdown_request`, escalating to kill if needed.
     pub(crate) fn shutdown(&mut self) -> Result<(), KernelError> {
+        if let Some(dp) = self.dataplane.take() {
+            dp.shutdown();
+        }
         let msg_id = Uuid::new_v4().to_string();
         let req = JupyterMessage::new_request(
             &self.session_id,

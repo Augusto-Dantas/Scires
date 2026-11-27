@@ -16,13 +16,14 @@
 //! assert!(handshake.capabilities.interrupt);
 //! ```
 
+mod dataplane;
 mod protocol;
 mod transport;
 
 use scires_core::{Language, Variable};
 use scires_kernel::{
     ExecuteRequest, ExecuteResult, Kernel, KernelCapabilities, KernelControl, KernelError,
-    KernelHandshake, KernelInfo, KernelStatus,
+    KernelHandshake, KernelInfo, KernelStatus, ValueProfile,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -267,6 +268,53 @@ impl Kernel for JuliaKernel {
                 },
             )
         })
+    }
+
+    fn export_value(&mut self, name: &str, profile: &ValueProfile) -> Result<Vec<u8>, KernelError> {
+        if self.status != KernelStatus::Idle {
+            return Err(KernelError::InvalidStatus(self.status));
+        }
+        if *profile != ValueProfile::scires_v1() {
+            return Err(KernelError::UnsupportedValueProfile {
+                id: profile.id.clone(),
+                version: profile.version,
+            });
+        }
+        let dp = self
+            .session
+            .as_ref()
+            .and_then(JuliaSession::dataplane)
+            .ok_or_else(|| KernelError::UnsupportedValueProfile {
+                id: profile.id.clone(),
+                version: profile.version,
+            })?;
+        dp.export_value(name)
+    }
+
+    fn import_value(
+        &mut self,
+        name: &str,
+        profile: &ValueProfile,
+        payload: &[u8],
+    ) -> Result<(), KernelError> {
+        if self.status != KernelStatus::Idle {
+            return Err(KernelError::InvalidStatus(self.status));
+        }
+        if *profile != ValueProfile::scires_v1() {
+            return Err(KernelError::UnsupportedValueProfile {
+                id: profile.id.clone(),
+                version: profile.version,
+            });
+        }
+        let dp = self
+            .session
+            .as_ref()
+            .and_then(JuliaSession::dataplane)
+            .ok_or_else(|| KernelError::UnsupportedValueProfile {
+                id: profile.id.clone(),
+                version: profile.version,
+            })?;
+        dp.import_value(name, payload)
     }
 }
 

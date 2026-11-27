@@ -1,9 +1,9 @@
 # SciRes UI/UX Design Specification
 
-**Status:** Proposed. This is a product and interaction specification, not a UI
-implementation or wireframe. egui is the selected recommendation for the first
-native-shell spike; the implementation choice, editor, and Slint reconsideration remain
-open.
+**Status:** Proposed product and interaction specification; **egui** is confirmed as the
+Rust-native shell toolkit via the bounded `crates/scires-egui-spike` prototype
+([ADR-0007](adr/0007-ui-shell.md)). The full Phase 4 end-to-end Julia workbench,
+decoupled production code editor, and native plugin-view contract remain open.
 
 ## 1. Product direction and constraints
 
@@ -16,18 +16,24 @@ feel like one coherent workbench without implying one shared interpreter.
 
 - Julia is the primary scripting environment; Python and R support specialized work,
   while C/C++ tasks cover performance-critical and legacy algorithms.
-- The IDE and orchestration are Rust-native. egui is the recommended toolkit for an
-  initial workbench spike; it is not yet an implementation dependency or final selection
-  (ADR-0007).
-- Kernels are intended to run in separate processes with per-language namespaces.
-  Cross-language values move only through explicit typed transfers.
+- The IDE and orchestration are Rust-native. **egui** (`eframe` + `egui_dock` +
+  `egui_plot`) is confirmed via the bounded `crates/scires-egui-spike` prototype
+  ([ADR-0007](adr/0007-ui-shell.md)); `scires-ui` remains pure and toolkit-agnostic, and
+  the full Phase 4 end-to-end Julia workbench is not yet built.
+- Kernels run in separate processes with per-language namespaces. Cross-language values
+  move only through explicit typed transfers.
 - The implemented `scires-interchange` v1 profile provides Arrow IPC scalars, tables,
   dense tensors, complex component pairs, and zero-based Int64 CSC sparse matrices.
-  Its Rust/PyArrow fixture verifies the format boundary, not Julia/R/C++ adapters.
-- `scires-ui` currently models dock areas and theme tokens. The default scientific
-  arrangement is Files, Editor, Variables/Plots, and Console/Debugger.
-- `scires-viz` defines a declarative plot model and renderer port. `scires-debug` defines
-  DAP-oriented domain state and a port. Neither has a concrete runtime/UI integration.
+  `crates/scires-julia-kernel` implements direct Rust Jupyter/ZeroMQ control-plane
+  transport and live loopback Arrow IPC data-plane exchange for Julia (ADR-0010);
+  Python, R, and C/C++ adapters remain unimplemented.
+- `scires-ui` models dock areas and theme tokens (`Files`, `Editor`, `Variables`/`Plots`,
+  `Console`/`Debugger`), mapped into `egui_dock` and `egui::Visuals` in the bounded
+  spike (`crates/scires-egui-spike`).
+- `scires-viz` defines a declarative plot model and renderer port (rendered in the spike
+  for `Line`, `Scatter`, and `Bar` via `egui_plot`, with `Heatmap` pending `PlotImage`).
+  `scires-debug` defines DAP-oriented domain state and a port; concrete DAP integration
+  remains unimplemented.
 
 ### Assumptions to validate
 
@@ -220,22 +226,31 @@ issues. Validate that the design still works with a non-Julia kernel and with tr
 or debugger capabilities unavailable. This spec does not claim that those integrations
 exist.
 
-## 9. Native toolkit recommendation
+## 9. Native toolkit decision
 
-ADR-0007 compares egui and Slint against this workbench. The current recommendation is
-**egui for the first native-shell spike**: it keeps custom scientific inspectors,
-plots, and changing kernel state in Rust, and its MIT license aligns with the repository's
-current MIT license. The toolkit-independent `scires-ui` layout and theme model should
-remain the source of truth.
+[ADR-0007](adr/0007-ui-shell.md) compares egui and Slint across docking, editor
+integration, plots, debugging, accessibility, platform support, licensing, and
+maintenance, and confirms **egui** (`eframe 0.27.2` + `egui_dock 0.12.0` +
+`egui_plot 0.27.2`) via the bounded `crates/scires-egui-spike` prototype. egui keeps
+scientific inspectors, plots, and kernel state in pure Rust under MIT/Apache-2.0
+licensing, compiles cleanly on Linux with zero C/GUI `-dev` headers, and emits headless
+`AccessKit` updates while keeping `scires-ui` pure and toolkit-agnostic.
 
-Slint offers a declarative component language that may suit conventional IDE panels and
-accessibility integrations, but adds a UI DSL/code-generation workflow. Its framework is
-available for open-source applications under GPLv3, while the repository is currently
-MIT-licensed; review the distribution and licensing implications before choosing it.
-Neither toolkit has yet been evaluated with SciRes's editor, large scientific tables,
-docking behavior, keyboard navigation, screen readers, or plugin views. The recommendation
-is therefore a direction for a bounded prototype, not a claim that those requirements are
-already met. See [ADR-0007](adr/0007-ui-shell.md) and its upstream
+Slint remains a declarative alternative, but introduces a `.slint` DSL/codegen workflow
+and GPLv3/commercial licensing friction relative to SciRes's MIT license.
+
+The bounded spike also confirmed explicit gaps that remain open for Phase 4+:
+
+- `egui::TextEdit` is spike-only; the production Julia editor must be decoupled for
+  syntax highlighting, LSP, multi-cursor, folding, soft-wrap gutters, and large files.
+- Bidirectional `egui_dock` ↔ `scires_ui::Layout` sync and layout persistence need a
+  reconciliation layer.
+- `LayerData::Heatmap` needs `egui_plot::PlotImage` texture upload + colourbar, and
+  large variable tables need virtualized rows (`egui_extras::TableBuilder`).
+- Custom widgets still require live screen-reader testing (Orca/NVDA/VoiceOver), and the
+  native plugin-view contract remains open.
+
+See [ADR-0007](adr/0007-ui-shell.md) and its upstream
 [egui](https://github.com/emilk/egui) and
 [Slint licensing](https://github.com/slint-ui/slint/blob/master/LICENSE.md) references.
 

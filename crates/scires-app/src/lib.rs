@@ -26,7 +26,7 @@ use scires_core::{EventBus, InMemoryEventBus, Language, Workspace};
 use scires_debug::BreakpointStore;
 use scires_kernel::{
     ExecuteRequest, ExecuteResult, KernelControl, KernelError, KernelFactory, KernelHandshake,
-    KernelManager,
+    KernelManager, ValueProfile,
 };
 use scires_plugin::{ActivationEvent, PluginError, PluginManifest, PluginRegistry};
 use std::path::PathBuf;
@@ -77,6 +77,17 @@ pub enum Command {
     RestartKernel(Language),
     /// Query the validated handshake of a running kernel, if started.
     KernelHandshake(Language),
+    /// Transfer a named value between two kernels using the negotiated `scires.value` v1 profile.
+    TransferValue {
+        /// Source kernel language.
+        source: Language,
+        /// Variable name in the source kernel.
+        source_name: String,
+        /// Target kernel language.
+        target: Language,
+        /// Variable name to bind in the target kernel.
+        target_name: String,
+    },
     /// Install a plugin from manifest text.
     InstallPlugin(String),
 }
@@ -94,6 +105,11 @@ pub enum Reply {
     PluginInstalled(String),
     /// Validated handshake for a running kernel, or `None` if not started.
     Handshake(Option<KernelHandshake>),
+    /// Typed Arrow IPC value transfer completed.
+    ValueTransferred {
+        /// Size in bytes of the transferred Arrow IPC payload.
+        bytes: usize,
+    },
 }
 
 /// The application facade.
@@ -207,6 +223,21 @@ impl App {
             Command::KernelHandshake(l) => {
                 Ok(Reply::Handshake(self.kernels.handshake(&l).cloned()))
             }
+            Command::TransferValue {
+                source,
+                source_name,
+                target,
+                target_name,
+            } => {
+                let profile = ValueProfile::scires_v1();
+                let payload = self
+                    .kernels
+                    .export_value(&source, &source_name, &profile)?;
+                let bytes = payload.len();
+                self.kernels
+                    .import_value(&target, &target_name, &profile, &payload)?;
+                Ok(Reply::ValueTransferred { bytes })
+            }
             Command::InstallPlugin(src) => {
                 let m = PluginManifest::from_toml(&src)?;
                 let id = m.id.clone();
@@ -310,5 +341,99 @@ mod tests {
             .dispatch(Command::KernelHandshake(Language::Julia))
             .unwrap();
         assert!(matches!(stopped, Reply::Handshake(None)));
+    }
+
+    #[test]
+    fn transfer_value_moves_bytes_between_negotiated_kernels_and_rejects_unnegotiated() {
+        use scires_core::Variable;
+        use scires_kernel::{Kernel, KernelCapabilities, KernelInfo, KernelStatus};
+
+        let mut app = App::default();
+        app.register_kernel(Arc::new(EchoKernelFactory::new(Language::Julia)));
+        app.register_kernel(Arc::new(EchoKernelFactory::new(Language::Python)));
+
+        // Seed an opaque value in Julia via KernelManager through EchoKernel's transfer port.
+        let profile = ValueProfile::scires_v1();
+        app.kernels
+            .import_value(&Language::Julia, "x", &profile, b"arrow-v1-payload")
+            .unwrap();
+
+        let reply = app
+            .dispatch(Command::TransferValue {
+                source: Language::Julia,
+                source_name: "x".into(),
+                target: Language::Python,
+                target_name: "y".into(),
+            })
+            .unwrap();
+        assert!(matches!(reply, Reply::ValueTransferred { bytes: 16 }));
+        assert_eq!(
+            app.kernels
+                .export_value(&Language::Python, "y", &profile)
+                .unwrap(),
+            b"arrow-v1-payload"
+        );
+
+        // Register a kernel that does NOT advertise scires.value v1 and confirm transfer fails.
+        struct NoProfileKernel(KernelStatus);
+        impl Kernel for NoProfileKernel {
+            fn info(&self) -> KernelInfo {
+                KernelInfo {
+                    language: Language::R,
+                    implementation: "r-stub".into(),
+                    language_version: "4.4".into(),
+                }
+            }
+            fn status(&self) -> KernelStatus {
+                self.0
+            }
+            fn start(&mut self) -> Result<(), KernelError> {
+                self.0 = KernelStatus::Idle;
+                Ok(())
+            }
+            fn execute(&mut self, req: &ExecuteRequest) -> Result<ExecuteResult, KernelError> {
+                Ok(ExecuteResult {
+                    request_id: req.request_id.clone(),
+                    execution_count: 1,
+                    outputs: vec![],
+                })
+            }
+            fn interrupt(&mut self) -> Result<(), KernelError> {
+                Ok(())
+            }
+            fn variables(&mut self) -> Result<Vec<Variable>, KernelError> {
+                Ok(vec![])
+            }
+            fn shutdown(&mut self) -> Result<(), KernelError> {
+                self.0 = KernelStatus::Stopped;
+                Ok(())
+            }
+            fn handshake(&self) -> KernelHandshake {
+                KernelHandshake::new(self.info(), KernelCapabilities::default())
+            }
+        }
+        struct NoProfileFactory;
+        impl KernelFactory for NoProfileFactory {
+            fn language(&self) -> Language {
+                Language::R
+            }
+            fn create(&self) -> Result<Box<dyn Kernel>, KernelError> {
+                Ok(Box::new(NoProfileKernel(KernelStatus::NotStarted)))
+            }
+        }
+
+        app.register_kernel(Arc::new(NoProfileFactory));
+        let err = app
+            .dispatch(Command::TransferValue {
+                source: Language::Julia,
+                source_name: "x".into(),
+                target: Language::R,
+                target_name: "z".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            AppError::Kernel(KernelError::UnsupportedValueProfile { .. })
+        ));
     }
 }

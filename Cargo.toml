@@ -10,6 +10,7 @@ members = [
     "crates/scires-ui",
     "crates/scires-app",
     "crates/scires-interchange",
+    "crates/scires-egui-spike",
 ]
 
 [workspace.package]

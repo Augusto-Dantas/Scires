@@ -5,8 +5,9 @@
 1. **Hexagonal / clean architecture** — domain crates have no knowledge of UI, IPC or
    language runtimes. Adapters implement traits defined in the domain.
 2. **Rust-native IDE and orchestration** — the IDE shell and application orchestration
-   are Rust. egui is recommended for the first native-shell spike; final toolkit
-   selection remains open (ADR-0007).
+   are Rust. **egui** is confirmed via the bounded `crates/scires-egui-spike` prototype
+   (ADR-0007), while `scires-ui` remains pure/toolkit-agnostic and the full Phase 4
+   end-to-end Julia workbench is not yet built.
 3. **Process isolation for language runtimes** — the target architecture runs Julia,
    Python and R kernels, and compiled C/C++ tasks, in separate worker processes. This is
    a crash boundary, not by itself a security sandbox; only the bounded Julia reference
@@ -25,7 +26,7 @@
 
 ```mermaid
 flowchart TD
-    UI["Rust-native UI (egui recommended; toolkit TBD)"] --> APP["scires-app (Rust orchestration)"]
+    UI["Rust-native UI (egui confirmed; bounded spike in scires-egui-spike)"] --> APP["scires-app (Rust orchestration)"]
     APP --> CORE["scires-core (workspace, values, events)"]
     APP --> KER["scires-kernel (Kernel trait, manager)"]
     APP --> DBG["scires-debug (sessions, breakpoints)"]
@@ -114,21 +115,18 @@ lossy conversion must be explicit.
 
 Shared-memory Arrow buffers are deferred: any later adoption must follow benchmarks and
 define buffer ownership, lifetime, cross-process cleanup and failure recovery first.
-`tests/arrow_profile_interop.py` verifies Arrow IPC exchange between the Rust profile and
-PyArrow. `tests/julia_arrow_interop.py` now verifies bidirectional Rust↔Julia Arrow IPC
-for an Int32 scalar, a table preserving valid NaN versus null, a dense Int32 tensor with
-axis metadata, and a Float64 CSC matrix with zero-based wire indices. The Julia fixture
-converts those indices to one-based `SparseMatrixCSC` indexing; writing CSC through
-Arrow.jl requires LargeList offsets. These interoperability fixtures exchange IPC stream
-files and do not test a live-kernel data-plane transport.
-`tests/julia_kernel_lifecycle.py` exercises IJulia through Python's Jupyter Client for
-project selection, execution/output, errors, interrupt, graceful shutdown, and restart.
-These tests establish only the listed
-Rust/Julia Arrow and IJulia/Jupyter behaviors; they do not prove live-kernel Arrow
-transport or a direct Rust Jupyter transport, and complex/more exhaustive profile
-interoperability remains unverified. The separate Python-only comparison in
-`tests/bench_data_exchange.py` remains exploratory performance evidence, not proof of
-kernel performance.
+`tests/arrow_profile_interop.py` verifies offline Arrow IPC exchange between the Rust
+profile and PyArrow, and `tests/julia_arrow_interop.py` verifies offline file-based
+Rust↔Julia Arrow IPC fixtures. Independently of those file-based fixtures,
+`crates/scires-julia-kernel` implements live-kernel loopback Arrow IPC data-plane
+exchange (`scires.value` v1), verified live against Julia 1.12.5 + IJulia 1.34.4 + Arrow
+2.8.1 across scalars (including null, NaN, UTF-8, and Complex128), tables (preserving NaN
+vs. `missing`), column-major Int32 and Complex128 tensors, Float64 CSC sparse matrices
+(zero-based wire indices ↔ Julia one-based `SparseMatrixCSC` via `LargeList`), explicit
+rejection of unsupported values, and `restart` re-initialization.
+`tests/julia_kernel_lifecycle.py` remains an external IJulia conformance fixture only.
+The separate Python-only comparison in `tests/bench_data_exchange.py` remains exploratory
+performance evidence, not proof of kernel performance.
 
 The versioned SciRes kernel API (ADR-0002, refined in ADR-0008) is the compatibility boundary.
 Jupyter-compatible messaging is used where it fits, with small JSON or Protobuf control
@@ -136,26 +134,28 @@ messages. Arrow IPC is the initial typed data representation rather than an impl
 shared namespace. Compiled C/C++ tasks run in isolated workers; the IDE must not load
 arbitrary native libraries into its process.
 
-The interchange profile serializes and decodes Arrow IPC streams in memory; process
-transport for Arrow values and most language-specific adapters remain unimplemented.
+The interchange profile serializes and decodes Arrow IPC streams in memory; live-kernel
+loopback Arrow transport is implemented for Julia (`crates/scires-julia-kernel`) and
+wired in `scires-app` (`Command::TransferValue`), while Python, R, and C/C++ kernel
+adapters remain unimplemented (Phase 5).
 
-**Julia reference kernel (control plane implemented; data plane pending):** ADR-0009
+**Julia reference kernel (control plane and live Arrow data plane implemented):** ADR-0009
 defines Jupyter messaging for Julia behind SciRes Kernel API v1, with Arrow IPC as a
 separate typed data plane. [ADR-0010](adr/0010-direct-rust-julia-transport.md)
-(**Accepted; implemented for control plane, live Arrow data plane pending**) replaced the
-earlier Python `jupyter_client`/`pyzmq` bridge (`julia_bridge.py` removed) with direct
-Rust Jupyter/ZeroMQ transport over pure-Rust `zeromq` and `tokio` inside
+(**Accepted, implemented**) replaced the earlier Python `jupyter_client`/`pyzmq` bridge
+(`julia_bridge.py` removed) with direct Rust Jupyter/ZeroMQ transport over pure-Rust
+`zeromq` and `tokio` plus an authenticated loopback TCP binary Arrow IPC data plane
+(`Main.__SciResDataPlane`, ephemeral `127.0.0.1` port + per-session random token) inside
 `crates/scires-julia-kernel`, keeping `scires-kernel` pure and transport-agnostic and
 retaining `tests/julia_kernel_lifecycle.py` only as an external IJulia conformance
 fixture. `crates/scires-julia-kernel` launches IJulia directly with an ephemeral
 connection file, performs `kernel_info` handshake, correlates `RequestId` execution and
-MIME outputs, advertises `interrupt: true` via the thread-safe `KernelControl` handle,
-restarts, and shuts down (verified live against Julia 1.12.5 + IJulia 1.34.4). The
-adapter still advertises `value_profiles: []`: live-kernel Arrow data-plane transfer
-(Slice 3+), variable snapshots, remote SciRes handshake exchange, complex
-interoperability, and all Python/R/C++ adapters remain unimplemented and unverified;
-file-based Arrow fixtures (`tests/julia_arrow_interop.py`) do not prove live-kernel Arrow
-transport.
+MIME outputs, advertises `interrupt: true` via `KernelControl` and `scires.value` v1
+when the data plane is verified, supports `Command::TransferValue` through `scires-app`,
+restarts cleanly, and shuts down (verified live against Julia 1.12.5 + IJulia 1.34.4 +
+Arrow 2.8.1). Variable snapshots, the UI workbench shell (Phase 3), DAP integration,
+plugin loading/sandboxing, and all Python/R/C++ kernel adapters (Phase 5) remain
+unimplemented.
 
 **Generalizable kernel contract:** Julia is the first adapter candidate, not a special
 shared runtime. A future adapter should negotiate the SciRes API and supported
@@ -226,9 +226,15 @@ policy, not currently enforced by the manifest parser or a runtime. See
 `scires-ui` is a pure, toolkit-agnostic model of the shell: a dock `Layout`
 (`left | center | right | bottom`) of `Panel`s and `Theme` design tokens. The default
 `Layout::scientific()` mirrors Spyder/RStudio: Files · Editor · Variables/Plots ·
-Console/Debugger. The UI must be Rust-native. egui is recommended for a bounded first
-shell spike; final toolkit and editor choices remain open (ADR-0007). The design proposal
-is in [UI_UX.md](UI_UX.md).
+Console/Debugger. The UI is Rust-native: **egui** (`eframe` + `egui_dock` + `egui_plot`)
+is confirmed by the bounded `crates/scires-egui-spike` prototype ([ADR-0007](adr/0007-ui-shell.md)),
+which validates `Theme` mapping, 4-region `Layout::scientific()` docking, `PlotSpec`
+rendering (`Line`/`Scatter`/`Bar`) with textual accessibility summaries, headless
+`AccessKit` updates, and `scires_app::App` wiring (against `EchoKernel`). The full
+Phase 4 end-to-end Julia workbench—including a decoupled production Julia editor,
+bidirectional dock sync/persistence, `Heatmap` via `PlotImage`, virtualized
+`TableBuilder` variable tables, live screen-reader testing, and the native plugin-view
+contract—is not yet built. The design specification is in [UI_UX.md](UI_UX.md).
 The existing UI/UX prototype lives in Figma:
 <https://www.figma.com/design/mX6AQKKVN9mkPeRU6v44k1> (Main Window, Plugin Manager),
 with colour variables matching `Theme::dark()`.
@@ -259,13 +265,13 @@ stateDiagram-v2
 | Work | Depends on / exit gate | Status |
 |------|------------------------|--------|
 | Core ports/mocks, plugin manifest/registry, plot model and Arrow v1 profile | Unit/schema tests and Arrow format fixture | Implemented; no concrete runtime adapter |
-| Specify the versioned kernel API: handshake, capabilities, request correlation, lifecycle, errors and output events | Keep process transport and language-specific details behind adapters | API v1 contract (`RequestId`, `KernelControl`, lifecycle states, handshake validation, opaque Arrow transfer port) implemented in `scires-kernel` and `scires-app`; remote handshake exchange remains pending |
-| Validate the Julia reference boundary and environment policy (ADR-0009) | Demonstrate a supported Julia/Jupyter path and real Julia Arrow/CSC conversions | Direct Rust ZeroMQ control plane verified on Julia 1.12.5 + IJulia 1.34.4; file-based scalar/table/tensor/CSC Rust↔Julia Arrow fixtures tested; live-kernel Arrow data-plane transfer unimplemented |
-| Implement the Julia process supervisor and adapter (ADR-0010) | API contract and feasibility gate above; direct Rust ZeroMQ transport, environment discovery, cancellation, interrupt, restart and diagnostics | ADR-0010 control plane implemented (pure-Rust `zeromq` + `tokio`, concurrent `KernelControl::interrupt`, restart, shutdown; `julia_bridge.py` removed); live Arrow data-plane transfer (`value_profiles: []`), variable snapshots, and diagnostics/policy polish remain pending |
-| Build the Rust-native workbench from the UI/UX spec | `scires-app` commands/events and stable kernel/output/transfer states | UI model only; egui recommended for first spike, no shell |
-| Connect variable, plot and debug panels | Kernel summaries and MIME events; Renderer contract; DAP capability/lifecycle alignment | Domain models/ports exist; integrations unimplemented |
-| Define plugin trust, runtime permissions, package/install and environment policy | Threat model, archive/signature policy and explicit process/WASM enforcement | Manifest/registry only; distribution and sandboxing unimplemented |
-| Add Python and R adapters; define the C/C++ task-worker subset | Shared API conformance suite plus Julia reference implementation | Later; no interoperability claims |
+| Specify the versioned kernel API: handshake, capabilities, request correlation, lifecycle, errors and output events | Keep process transport and language-specific details behind adapters | API v1 contract (`RequestId`, `KernelControl`, lifecycle states, handshake validation, opaque Arrow transfer port, `Command::TransferValue`) implemented in `scires-kernel` and `scires-app` |
+| Validate the Julia reference boundary and environment policy (ADR-0009) | Demonstrate a supported Julia/Jupyter path and real Julia Arrow/CSC conversions | Direct Rust ZeroMQ control plane and live loopback Arrow IPC data plane (`scires.value` v1) verified on Julia 1.12.5 + IJulia 1.34.4 + Arrow 2.8.1; product-level environment precedence policy remains open |
+| Implement the Julia process supervisor and adapter (ADR-0010) | API contract and feasibility gate above; direct Rust ZeroMQ transport, live Arrow data plane, cancellation, interrupt, restart and diagnostics | ADR-0010 implemented (pure-Rust `zeromq` + `tokio`, concurrent `KernelControl::interrupt`, live loopback Arrow IPC data plane, `Command::TransferValue`, restart, shutdown; `julia_bridge.py` removed); variable snapshots and diagnostics/policy polish remain pending |
+| Build the Rust-native workbench from the UI/UX spec (Phase 3 / Phase 4) | `scires-app` commands/events and stable kernel/output/transfer states | Bounded egui spike (`crates/scires-egui-spike`) implemented and headlessly verified, confirming ADR-0007 while keeping `scires-ui` pure; full Phase 4 end-to-end Julia workbench, decoupled editor, virtualized tables, `Heatmap` `PlotImage`, and live screen-reader testing remain pending |
+| Connect variable, plot and debug panels | Kernel summaries and MIME events; Renderer contract; DAP capability/lifecycle alignment | Domain models/ports exist; variable snapshots, plot routing and DAP integration unimplemented |
+| Define plugin trust, runtime permissions, package/install and environment policy | Threat model, archive/signature policy and explicit process/WASM enforcement | Manifest/registry only; plugin loading, distribution and sandboxing unimplemented |
+| Add Python and R adapters; define the C/C++ task-worker subset (Phase 5) | Shared API conformance suite plus Julia reference implementation | Unimplemented; no interoperability claims |
 
 UI/UX design can proceed in parallel with kernel API and Julia feasibility work; the live
 shell should not assume transport-specific behavior. Third-party plugin distribution
