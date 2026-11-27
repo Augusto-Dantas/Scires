@@ -5,11 +5,12 @@
 1. **Hexagonal / clean architecture** — domain crates have no knowledge of UI, IPC or
    language runtimes. Adapters implement traits defined in the domain.
 2. **Rust-native IDE and orchestration** — the IDE shell and application orchestration
-   are Rust. The native UI toolkit is not yet selected.
+   are Rust. egui is recommended for the first native-shell spike; final toolkit
+   selection remains open (ADR-0007).
 3. **Process isolation for language runtimes** — the target architecture runs Julia,
    Python and R kernels, and compiled C/C++ tasks, in separate worker processes. This is
-   a crash boundary, not by itself a security sandbox; concrete supervisors are not yet
-   implemented.
+   a crash boundary, not by itself a security sandbox; only the bounded Julia reference
+   supervisor exists.
 4. **Versioned kernel boundary** — a versioned SciRes kernel API defines host/kernel
    capabilities. Jupyter-compatible messaging is used where it fits; small control
    messages use JSON or Protobuf.
@@ -24,7 +25,7 @@
 
 ```mermaid
 flowchart TD
-    UI["Rust-native UI (toolkit TBD)"] --> APP["scires-app (Rust orchestration)"]
+    UI["Rust-native UI (egui recommended; toolkit TBD)"] --> APP["scires-app (Rust orchestration)"]
     APP --> CORE["scires-core (workspace, values, events)"]
     APP --> KER["scires-kernel (Kernel trait, manager)"]
     APP --> DBG["scires-debug (sessions, breakpoints)"]
@@ -49,6 +50,7 @@ flowchart TD
 |---------|-------|--------------|
 | Workspace | `scires-core` | `Workspace`, `Variable`, `Value`, `Language` |
 | Execution | `scires-kernel` | `Kernel`, `KernelFactory`, `KernelManager`, `ExecuteRequest` |
+| Julia adapter | `scires-julia-kernel` | Rust supervisor and Jupyter-client bridge for the reference kernel |
 | Interchange | `scires-interchange` | Versioned Arrow IPC scalar, table, tensor and CSC profile |
 | Debugging | `scires-debug` | `DebugSession`, `DebugState`, `Breakpoint`, `DebugAdapter` |
 | Extensibility | `scires-plugin` | `PluginManifest`, `Contributions`, `PluginRegistry` |
@@ -83,9 +85,9 @@ copy-based transport. The initial transferable set is:
 - UTF-8 strings and rectangular tables whose columns use supported Arrow primitive types.
   Complex values are represented as a real/imaginary pair.
 - Sparse matrices in compressed sparse column (CSC) form with Int64 offsets and indices,
-  numeric values, shape metadata and zero-based wire indices. Do not silently densify
-  sparse data. Language adapters convert between zero-based wire indices and each
-  runtime's native index convention.
+  numeric values, shape metadata and zero-based wire indices. Arrow uses LargeList columns
+  to preserve 64-bit list offsets. Do not silently densify sparse data. Language adapters
+  convert between zero-based wire indices and each runtime's native index convention.
 
 The implemented v1 profile is in `crates/scires-interchange`. It supports Arrow null,
 Boolean, fixed-width integer, Float32/64, UTF-8 and component-pair complex scalar values;
@@ -113,9 +115,20 @@ lossy conversion must be explicit.
 Shared-memory Arrow buffers are deferred: any later adoption must follow benchmarks and
 define buffer ownership, lifetime, cross-process cleanup and failure recovery first.
 `tests/arrow_profile_interop.py` verifies Arrow IPC exchange between the Rust profile and
-PyArrow. This verifies the format boundary only, not Julia/R/C++ kernel adapters. The
-separate Python-only comparison in `tests/bench_data_exchange.py` remains exploratory
-performance evidence, not proof of SciRes runtime interoperability.
+PyArrow. `tests/julia_arrow_interop.py` now verifies bidirectional Rust↔Julia Arrow IPC
+for an Int32 scalar, a table preserving valid NaN versus null, a dense Int32 tensor with
+axis metadata, and a Float64 CSC matrix with zero-based wire indices. The Julia fixture
+converts those indices to one-based `SparseMatrixCSC` indexing; writing CSC through
+Arrow.jl requires LargeList offsets. These interoperability fixtures exchange IPC stream
+files and do not test a live-kernel data-plane transport.
+`tests/julia_kernel_lifecycle.py` exercises IJulia through Python's Jupyter Client for
+project selection, execution/output, errors, interrupt, graceful shutdown, and restart.
+These tests establish only the listed
+Rust/Julia Arrow and IJulia/Jupyter behaviors; they do not prove live-kernel Arrow
+transport or a direct Rust Jupyter transport, and complex/more exhaustive profile
+interoperability remains unverified. The separate Python-only comparison in
+`tests/bench_data_exchange.py` remains exploratory performance evidence, not proof of
+kernel performance.
 
 The versioned SciRes kernel API (ADR-0002, refined in ADR-0008) is the compatibility boundary.
 Jupyter-compatible messaging is used where it fits, with small JSON or Protobuf control
@@ -123,15 +136,20 @@ messages. Arrow IPC is the initial typed data representation rather than an impl
 shared namespace. Compiled C/C++ tasks run in isolated workers; the IDE must not load
 arbitrary native libraries into its process.
 
-The current profile serializes and decodes Arrow IPC streams in memory; process transport,
-kernel lifecycle, and language-specific adapters remain unimplemented.
+The interchange profile serializes and decodes Arrow IPC streams in memory; process
+transport for Arrow values and most language-specific adapters remain unimplemented.
 
-**Julia reference kernel (proposed):** ADR-0009 proposes a Rust-managed Julia process,
-capability negotiation behind the versioned SciRes API, Jupyter-compatible execution
-semantics where supported, and Arrow IPC as a separate typed data plane. It also defines
-the proposed boundary for converting zero-based CSC wire indices to Julia indexing.
-This is a planning proposal only: IJulia/Jupyter and Julia Arrow interoperability have
-not been verified, and no Julia kernel adapter exists yet.
+**Julia reference kernel (bounded implementation):** ADR-0009 defines Jupyter messaging
+for Julia behind SciRes Kernel API v1, with Arrow IPC as a separate typed data plane.
+`crates/scires-julia-kernel` now provides a Rust-supervised Julia adapter that
+launches its `julia_bridge.py`, advertises the v1 handshake, executes code, restarts and
+shuts down. The bridge uses Python `jupyter_client` to connect to IJulia and is a
+vertical-slice implementation, not a direct Rust ZeroMQ transport. The pinned
+`tests/julia` environment verifies IJulia/Jupyter lifecycle behavior and the Arrow cases
+listed above. Rust-side interrupt is intentionally not advertised by this synchronous
+bridge. Live Arrow transfer, variable snapshots, direct Rust ZeroMQ,
+complex interoperability, remote handshake exchange, and all Python/R/C++ adapters
+remain unverified.
 
 **Generalizable kernel contract:** Julia is the first adapter candidate, not a special
 shared runtime. A future adapter should negotiate the SciRes API and supported
@@ -202,8 +220,9 @@ policy, not currently enforced by the manifest parser or a runtime. See
 `scires-ui` is a pure, toolkit-agnostic model of the shell: a dock `Layout`
 (`left | center | right | bottom`) of `Panel`s and `Theme` design tokens. The default
 `Layout::scientific()` mirrors Spyder/RStudio: Files · Editor · Variables/Plots ·
-Console/Debugger. The UI must be Rust-native; the specific native toolkit remains open
-(ADR-0007). The design proposal is in [UI_UX.md](UI_UX.md); it does not select a toolkit.
+Console/Debugger. The UI must be Rust-native. egui is recommended for a bounded first
+shell spike; final toolkit and editor choices remain open (ADR-0007). The design proposal
+is in [UI_UX.md](UI_UX.md).
 The existing UI/UX prototype lives in Figma:
 <https://www.figma.com/design/mX6AQKKVN9mkPeRU6v44k1> (Main Window, Plugin Manager),
 with colour variables matching `Theme::dark()`.
@@ -234,10 +253,10 @@ stateDiagram-v2
 | Work | Depends on / exit gate | Status |
 |------|------------------------|--------|
 | Core ports/mocks, plugin manifest/registry, plot model and Arrow v1 profile | Unit/schema tests and Arrow format fixture | Implemented; no concrete runtime adapter |
-| Specify the versioned kernel API: handshake, capabilities, request correlation, lifecycle, errors and output events | Keep process transport and language-specific details behind adapters | Planning; current `Kernel` trait is smaller than the proposed contract |
-| Validate the Julia reference boundary and environment policy (ADR-0009) | Demonstrate a supported Julia/Jupyter path and real Julia Arrow/CSC conversions before choosing its control transport | Proposed; interoperability unverified |
-| Implement the Julia process supervisor and adapter | API contract and feasibility gate above; environment discovery, cancellation, interrupt, restart and diagnostics | Not implemented |
-| Build the Rust-native workbench from the UI/UX spec | `scires-app` commands/events and stable kernel/output/transfer states; toolkit remains open | UI model only; no shell |
+| Specify the versioned kernel API: handshake, capabilities, request correlation, lifecycle, errors and output events | Keep process transport and language-specific details behind adapters | API v1 handshake shape implemented for the Julia adapter; direct request correlation and async lifecycle remain to complete |
+| Validate the Julia reference boundary and environment policy (ADR-0009) | Demonstrate a supported Julia/Jupyter path and real Julia Arrow/CSC conversions | IJulia/Jupyter lifecycle plus scalar/table/tensor/CSC Rust↔Julia Arrow cases tested; direct Rust transport and live Arrow transfer unverified |
+| Implement the Julia process supervisor and adapter | API contract and feasibility gate above; environment discovery, cancellation, interrupt, restart and diagnostics | Bounded Rust bridge implementation exists; direct Jupyter transport, interrupt testing in Rust, live Arrow transfer and diagnostics remain |
+| Build the Rust-native workbench from the UI/UX spec | `scires-app` commands/events and stable kernel/output/transfer states | UI model only; egui recommended for first spike, no shell |
 | Connect variable, plot and debug panels | Kernel summaries and MIME events; Renderer contract; DAP capability/lifecycle alignment | Domain models/ports exist; integrations unimplemented |
 | Define plugin trust, runtime permissions, package/install and environment policy | Threat model, archive/signature policy and explicit process/WASM enforcement | Manifest/registry only; distribution and sandboxing unimplemented |
 | Add Python and R adapters; define the C/C++ task-worker subset | Shared API conformance suite plus Julia reference implementation | Later; no interoperability claims |

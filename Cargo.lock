@@ -598,6 +598,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "scires-julia-kernel"
+version = "0.1.0"
+dependencies = [
+ "scires-core",
+ "scires-kernel",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "scires-kernel"
 version = "0.1.0"
 dependencies = [

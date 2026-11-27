@@ -1,8 +1,8 @@
 //! Kernel abstraction (port) and kernel manager.
 //!
 //! Concrete kernels (Jupyter/ZeroMQ adapters for Julia, Python, R, C/C++) live in
-//! plugins and implement [`Kernel`] + [`KernelFactory`]. [`KernelManager`] owns
-//! registered factories and lazily starts kernels on first use.
+//! language-adapter crates or plugins and implement [`Kernel`] + [`KernelFactory`].
+//! [`KernelManager`] owns registered factories and lazily starts kernels on first use.
 //!
 //! # Examples
 //!
@@ -40,6 +40,9 @@ pub enum KernelError {
     /// Kernel process failed to start.
     #[error("failed to start kernel: {0}")]
     Startup(String),
+    /// Kernel does not implement a requested optional capability.
+    #[error("kernel capability is unavailable: {0}")]
+    CapabilityUnavailable(&'static str),
     /// Code raised an error.
     #[error("{ename}: {evalue}")]
     Execution {
@@ -61,6 +64,67 @@ pub enum KernelStatus {
     Busy,
     /// Shut down.
     Dead,
+}
+
+/// Kernel capabilities advertised by a versioned SciRes adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelCapabilities {
+    /// Execute code in the kernel.
+    pub execute: bool,
+    /// Interrupt an active execution.
+    pub interrupt: bool,
+    /// Shut down the process.
+    pub shutdown: bool,
+    /// Restart the process and clear its namespace.
+    pub restart: bool,
+}
+
+impl Default for KernelCapabilities {
+    fn default() -> Self {
+        Self {
+            execute: true,
+            interrupt: true,
+            shutdown: true,
+            restart: true,
+        }
+    }
+}
+
+/// SciRes kernel API v1 handshake returned by a kernel adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelHandshake {
+    /// SciRes API identifier.
+    pub api: &'static str,
+    /// SciRes API major version.
+    pub version: u16,
+    /// Runtime and implementation details.
+    pub info: KernelInfo,
+    /// Operations implemented by this adapter.
+    pub capabilities: KernelCapabilities,
+    /// Arrow value profiles supported by this adapter.
+    pub value_profiles: Vec<ValueProfile>,
+}
+
+/// Arrow value profile identifier and version advertised by an adapter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueProfile {
+    /// Profile identifier, for example `scires.value`.
+    pub id: String,
+    /// Profile version.
+    pub version: u16,
+}
+
+impl KernelHandshake {
+    /// Create a handshake for a kernel implementation.
+    pub fn new(info: KernelInfo, capabilities: KernelCapabilities) -> Self {
+        Self {
+            api: "scires.kernel",
+            version: 1,
+            info,
+            capabilities,
+            value_profiles: Vec::new(),
+        }
+    }
 }
 
 /// Static description of a kernel implementation.
@@ -134,6 +198,15 @@ pub trait Kernel: Send {
     fn variables(&mut self) -> Result<Vec<Variable>, KernelError>;
     /// Shut the kernel down.
     fn shutdown(&mut self) -> Result<(), KernelError>;
+    /// Restart the kernel and clear its in-memory namespace.
+    fn restart(&mut self) -> Result<(), KernelError> {
+        self.shutdown()?;
+        self.start()
+    }
+    /// Advertise the versioned SciRes API capabilities implemented by this adapter.
+    fn handshake(&self) -> KernelHandshake {
+        KernelHandshake::new(self.info(), KernelCapabilities::default())
+    }
 }
 
 /// Creates kernels of one language; registered by plugins.

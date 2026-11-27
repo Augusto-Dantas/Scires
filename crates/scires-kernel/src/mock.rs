@@ -90,6 +90,13 @@ impl Kernel for EchoKernel {
         self.status = KernelStatus::Dead;
         Ok(())
     }
+
+    fn restart(&mut self) -> Result<(), KernelError> {
+        self.status = KernelStatus::Idle;
+        self.count = 0;
+        self.vars.clear();
+        Ok(())
+    }
 }
 
 /// Factory for [`EchoKernel`].

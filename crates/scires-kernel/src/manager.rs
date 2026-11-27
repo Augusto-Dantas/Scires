@@ -107,10 +107,15 @@ impl KernelManager {
 
     /// Restart a kernel: shutdown, clear its workspace namespace, start fresh.
     pub fn restart(&mut self, language: &Language) -> Result<(), KernelError> {
-        self.shutdown(language)?;
+        if let Some(k) = self.running.get_mut(language) {
+            k.restart()?;
+            self.publish_status(language, "idle");
+        } else {
+            self.kernel(language).map(|_| ())?;
+        }
         self.events
             .publish(DomainEvent::WorkspaceCleared(Some(language.clone())));
-        self.kernel(language).map(|_| ())
+        Ok(())
     }
 
     /// Shut down every kernel.
@@ -137,7 +142,9 @@ mod tests {
     fn lazily_starts_and_executes() {
         let mut m = manager();
         assert_eq!(m.status(&Language::Julia), KernelStatus::NotStarted);
-        let r = m.execute(&Language::Julia, &ExecuteRequest::new("1+1")).unwrap();
+        let r = m
+            .execute(&Language::Julia, &ExecuteRequest::new("1+1"))
+            .unwrap();
         assert_eq!(r.execution_count, 1);
         assert_eq!(r.outputs, vec![Output::Stdout("1+1".into())]);
         assert_eq!(m.status(&Language::Julia), KernelStatus::Idle);
@@ -146,16 +153,21 @@ mod tests {
     #[test]
     fn unsupported_language() {
         let mut m = manager();
-        let e = m.execute(&Language::R, &ExecuteRequest::new("x")).unwrap_err();
+        let e = m
+            .execute(&Language::R, &ExecuteRequest::new("x"))
+            .unwrap_err();
         assert_eq!(e, KernelError::Unsupported(Language::R));
     }
 
     #[test]
     fn restart_resets_counter() {
         let mut m = manager();
-        m.execute(&Language::Julia, &ExecuteRequest::new("a")).unwrap();
+        m.execute(&Language::Julia, &ExecuteRequest::new("a"))
+            .unwrap();
         m.restart(&Language::Julia).unwrap();
-        let r = m.execute(&Language::Julia, &ExecuteRequest::new("b")).unwrap();
+        let r = m
+            .execute(&Language::Julia, &ExecuteRequest::new("b"))
+            .unwrap();
         assert_eq!(r.execution_count, 1);
     }
 }
